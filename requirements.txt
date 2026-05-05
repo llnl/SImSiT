@@ -1,0 +1,11 @@
+numpy
+scipy
+matplotlib
+scikit-learn
+galsim
+astropy
+astroplan
+astroquery
+lsst-sphgeom
+PyYAML
+llnl-ssapy

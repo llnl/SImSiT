@@ -1,0 +1,76 @@
+outdir: output/empty_target_example
+image_dir: images
+reference_dir: reference
+
+n_obs: 100
+n_example: 0
+n_sat: 1
+seed: 32835
+
+meta:
+  description: Example target-tracking simulation without a simulated satellite signal
+
+instrument:
+  distortion:
+    th: &th [0.0, 0.03448276, 0.06896552, 0.10344828, 0.13793103,
+      0.17241379, 0.20689655, 0.24137931, 0.27586207, 0.31034483,
+      0.34482759, 0.37931034, 0.4137931, 0.44827586, 0.48275862,
+      0.51724138, 0.55172414, 0.5862069, 0.62068966, 0.65517241,
+      0.68965517, 0.72413793, 0.75862069, 0.79310345, 0.82758621,
+      0.86206897, 0.89655172, 0.93103448, 0.96551724, 1.0]
+    dthdr: [0.06124069, 0.06126784, 0.06124352, 0.06120296, 0.06114596,
+      0.06107225, 0.06098148, 0.06087321, 0.06074759, 0.06060343,
+      0.0604463, 0.06029759, 0.06011246, 0.05992273, 0.05973642,
+      0.05947572, 0.05919784, 0.05893438, 0.05865396, 0.05834981,
+      0.05815874, 0.05775472, 0.05736799, 0.05702492, 0.0565666,
+      0.0563616, 0.05585923, 0.05531151, 0.05477258, 0.05446725]
+  vignetting:
+    th: *th
+    unvig: [0.86972549, 0.87259059, 0.87087748, 0.86941706, 0.86827994,
+      0.86648507, 0.86486115, 0.86346019, 0.86065827, 0.85650741,
+      0.85182144, 0.82975165, 0.78771911, 0.73632577, 0.67956641,
+      0.61945143, 0.55733349, 0.5019528, 0.45624505, 0.41441689,
+      0.37429813, 0.3345807, 0.29365183, 0.24876162, 0.19516092,
+      0.1444885, 0.09833854, 0.05772925, 0.02454469, 0.00247119]
+  pixel_scale: 25.0
+  image_shape: [1800, 1536]
+  gain: 1.0
+  read_noise: 5.0
+  aperture: 1.0
+  obscuration: 0.1
+
+  zeropoint: 27.0
+
+conditions:
+  psf_fwhm_range: [2.0, 6.0]
+  sky_range: [18.3, 20.3]
+  zp_range: [0.0, 0.3]
+
+cadence:
+  exptime: [0.1, 0.2, 0.5]
+
+tracker:
+  type: orbit
+  rot_sky_pos0: 0.0
+  error:
+    t_rewind: 20
+    v_perturb: 1.0
+    boresight: 0.2
+
+# Example observing sites recognized by astroplan.Observer.at_site.
+sites:
+  - apo
+  - ctio
+  - haleakala
+  - kpno
+  - lapalma
+  - lick
+  - Cerro Pachon
+
+sat:
+  mag_range: null
+
+catalog:
+  develop: false
+  gaia_dir: /path/to/local/gaia_catalog
+  min_snr: 5.0

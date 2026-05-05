@@ -1,0 +1,30 @@
+# Documentation build artifacts
+docs/build/
+
+# Development environment
+.devcontainer/
+.env
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/

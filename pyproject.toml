@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "simsit"
+version = "1.0.0"
+description = "A Python package for generating synthetic telescope images of stars and satellites."
+authors = [
+  { name = "LLNL SImSiT Team" }
+]
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+classifiers = [
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Scientific/Engineering :: Astronomy",
+]
+dependencies = [
+  "numpy",
+  "scipy",
+  "matplotlib",
+  "scikit-learn",
+  "galsim",
+  "astropy",
+  "astroplan",
+  "llnl-ssapy",
+  "astroquery",
+  "lsst-sphgeom",
+  "pyyaml",
+]
+
+[project.urls]
+Homepage = "https://github.com/LLNL/simsit"
+Repository = "https://github.com/LLNL/simsit"
+Documentation = "https://simsit.readthedocs.io"
+Issues = "https://github.com/LLNL/simsit/issues"
+Changelog = "https://github.com/LLNL/simsit/blob/main/change_log.md"
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-cov",
+]
+docs = [
+  "sphinx",
+  "sphinx_rtd_theme",
+  "sphinxcontrib-bibtex",
+  "sphinx-automodapi",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["simsit"]
+
+[tool.pytest.ini_options]
+markers = [
+  "integration: marks tests that require network access or external services",
+]
