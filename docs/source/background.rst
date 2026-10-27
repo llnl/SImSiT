@@ -7,8 +7,9 @@ Summary
 
 SImSiT (Satellite Image Simulation Toolkit) is a Python package for generating
 synthetic telescope images containing stars and satellites. It is built on top
-of GalSim (:cite:t:`Rowe2015`) and SSAPy (:cite:t:`SSAPy2023`; :cite:t:`Yeager2023`)
-and is intended to support the development and testing of algorithms for
+of GalSim (:cite:t:`Rowe2015`) and `SSATK <https://github.com/LLNL/ssatk>`_,
+whose core astrodynamics uses SSAPy (:cite:t:`SSAPy2023`; :cite:t:`Yeager2023`).
+It is intended to support the development and testing of algorithms for
 satellite imaging, detection, calibration, and related analysis tasks.
 
 SImSiT supports multiple observing configurations, including sidereal tracking
@@ -51,7 +52,7 @@ become increasingly important for both astronomy and space-domain applications.
 Method
 ------
 
-SImSiT combines GalSim-based image rendering with SSAPy-based orbital and
+SImSiT combines GalSim-based image rendering with SSATK-based orbital and
 observational geometry calculations.
 
 GalSim enables users to configure observing parameters such as detector
@@ -59,7 +60,7 @@ properties, optical distortion, vignetting, and point-spread functions.
 These models can be used either to approximate existing instruments or to
 explore prospective observing configurations.
 
-SSAPy provides orbit propagation and related geometry calculations, allowing
+SSATK provides orbit propagation and related geometry calculations, allowing
 users to simulate satellites in a range of orbit classes and observing
 scenarios.
 

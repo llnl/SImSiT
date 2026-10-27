@@ -8,4 +8,5 @@ astroplan
 astroquery
 lsst-sphgeom
 PyYAML
-llnl-ssapy
+ssatk>=1.1.4
+tqdm

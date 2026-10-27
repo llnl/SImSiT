@@ -43,6 +43,49 @@ def test_vega_to_ab_offset():
         )
 
 
+def test_gaia_magnitude_histogram_has_edges_and_finite_filter(monkeypatch):
+    catalog = Table(
+        {
+            "phot_g_mean_mag": [1.0, 2.0, 3.0, np.nan, np.inf],
+            "phot_bp_mean_mag": [1.0, 2.0, 3.0, np.nan, np.inf],
+            "phot_rp_mean_mag": [1.0, 2.0, 3.0, np.nan, np.inf],
+        }
+    )
+    monkeypatch.setattr(
+        "simsit.photometry.get_gaia_sources",
+        lambda *args, **kwargs: catalog,
+    )
+
+    result = get_gaia_magnitude_histogram(0, 0, 1, nbins=2)
+
+    for values in result.values():
+        assert len(values["bins"]) == 3
+        assert len(values["values"]) == 2
+        assert np.all(np.isfinite(values["bins"]))
+        assert np.sum(values["values"]) == 3
+
+
+def test_gaia_magnitude_histogram_constant_values():
+    catalog = Table(
+        {
+            "phot_g_mean_mag": [5.0, 5.0],
+            "phot_bp_mean_mag": [5.0, 5.0],
+            "phot_rp_mean_mag": [5.0, 5.0],
+        }
+    )
+
+    import simsit.photometry as photometry
+    original = photometry.get_gaia_sources
+    photometry.get_gaia_sources = lambda *args, **kwargs: catalog
+    try:
+        result = get_gaia_magnitude_histogram(0, 0, 1, nbins=1)
+    finally:
+        photometry.get_gaia_sources = original
+
+    assert len(result["G"]["bins"]) == 2
+    assert result["G"]["values"].tolist() == [2]
+
+
 @pytest.mark.integration
 def test_get_gaia_sources():
     ra_deg = 10.0
@@ -81,6 +124,7 @@ def test_get_gaia_magnitude_histogram():
         assert filt in results, f"Expected filter {filt} in results"
         assert "bins" in results[filt], f"Expected 'bins' key in {filt} results"
         assert "values" in results[filt], f"Expected 'values' key in {filt} results"
-        assert len(results[filt]["bins"]) in (0, nbins), (
-            f"Expected {nbins} bins or empty result for {filt}, got {len(results[filt]['bins'])}"
+        assert len(results[filt]["bins"]) in (0, nbins + 1), (
+            f"Expected {nbins + 1} edges or empty result for {filt}, "
+            f"got {len(results[filt]['bins'])}"
         )

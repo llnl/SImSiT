@@ -2,8 +2,9 @@ import astropy.units as u
 import numpy as np
 import pytest
 import simsit
-import ssapy
+import ssatk
 from astropy.time import Time
+from astropy.time import TimeDelta
 
 
 def test_simple_cadence():
@@ -13,8 +14,8 @@ def test_simple_cadence():
 
     rng = np.random.default_rng(1234)
     t0 = Time("2010-01-01T00:00:00")
-    orbit = ssapy.Orbit.fromKeplerianElements(
-        ssapy.constants.WGS72_EARTH_RADIUS + rng.uniform(400e3, 1000e3),
+    orbit = ssatk.Orbit.fromKeplerianElements(
+        ssatk.constants.WGS72_EARTH_RADIUS + rng.uniform(400e3, 1000e3),
         rng.uniform(0.001, 0.002),
         np.deg2rad(60.0 + rng.uniform(-5.0, 5.0)),
         rng.uniform(0.0, 2 * np.pi),
@@ -32,7 +33,7 @@ def test_simple_cadence():
     observers = []
     for _ in range(4):
         observers.append(
-            ssapy.EarthObserver(
+            ssatk.EarthObserver(
                 lon=rng.uniform(0.0, 360.0),
                 lat=rng.uniform(30.0, 70.0),
                 elevation=rng.uniform(100.0, 3000.0),
@@ -40,10 +41,10 @@ def test_simple_cadence():
             )
         )
 
-    prop = ssapy.propagator.KeplerianPropagator()
+    prop = ssatk.KeplerianPropagator()
 
     try:
-        passes = ssapy.compute.find_passes(
+        passes = ssatk.ssapy.compute.find_passes(
             orbit,
             observers,
             t0,
@@ -53,11 +54,11 @@ def test_simple_cadence():
             horizon=np.deg2rad(10.0),
         )
     except Exception as exc:
-        pytest.skip(f"Skipping cadence integration test due to external ssapy/IERS issue: {exc}")
+        pytest.skip(f"Skipping cadence integration test due to external backend/IERS issue: {exc}")
 
     for observer, times in passes.items():
         for time in times[:2]:
-            refinement = ssapy.compute.refine_pass(
+            refinement = ssatk.ssapy.compute.refine_pass(
                 orbit,
                 observer,
                 time,
@@ -70,7 +71,7 @@ def test_simple_cadence():
             np.testing.assert_allclose(np.diff(t_end.gps), delay.to(u.s).value)
             np.testing.assert_allclose(np.diff(t_start.gps), delay.to(u.s).value)
 
-            alt, az = ssapy.quickAltAz(
+            alt, az = ssatk.quickAltAz(
                 refinement["orbit"],
                 t_start,
                 refinement["observer"],
@@ -78,12 +79,62 @@ def test_simple_cadence():
             )
             assert np.all(alt >= np.deg2rad(10.0 - 1 / 60))
 
-            r, v = ssapy.rv(
+            r, v = ssatk.rv(
                 refinement["orbit"],
                 t_start,
                 propagator=refinement["propagator"],
             )
-            r_par, r_perp = ssapy.compute.earthShadowCoords(r, t_start)
-            shadow_height = r_perp - ssapy.constants.WGS72_EARTH_RADIUS
+            r_par, r_perp = ssatk.ssapy.compute.earthShadowCoords(r, t_start)
+            shadow_height = r_perp - ssatk.constants.WGS72_EARTH_RADIUS
 
             assert np.all((r_par < 1) | (shadow_height > -1))
+
+
+def test_simple_cadence_float_seconds_and_boundary():
+    cadence = simsit.SimpleCadence(2.0, 5.0)
+    t0 = Time("2020-01-01T00:00:00")
+    pass_ = {
+        "illumAtStart": True,
+        "illumAtEnd": False,
+        "tStart": t0,
+        "tTerminator": t0 + TimeDelta(11, format="sec"),
+        "tEnd": t0 + TimeDelta(20, format="sec"),
+    }
+
+    starts, ends = cadence.get_times(pass_)
+    np.testing.assert_allclose((starts - t0).sec, [0, 5])
+    np.testing.assert_allclose((ends - t0).sec, [2, 7])
+    assert np.all(ends <= pass_["tTerminator"])
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_simple_cadence_rejects_nonfinite_float(value):
+    with pytest.raises(ValueError, match="finite"):
+        simsit.SimpleCadence(value, 1.0)
+    with pytest.raises(ValueError, match="finite"):
+        simsit.SimpleCadence(1.0, value)
+
+
+def test_simple_cadence_accepts_quantity_and_timedelta():
+    cadence = simsit.SimpleCadence(1.0 * u.s, TimeDelta(3, format="sec"))
+    assert cadence.exptime.sec == 1
+    assert cadence.delay.sec == 3
+
+
+def test_simple_cadence_rejects_timedelta_arrays_and_hits_scaled_boundary():
+    with pytest.raises(ValueError, match="scalar"):
+        simsit.SimpleCadence(TimeDelta([1, 2], format="sec"), 1.0)
+
+    t0 = Time("2020-01-01T00:00:00")
+    t_start = t0 + TimeDelta(123456.7, format="sec")
+    pass_ = {
+        "illumAtStart": True,
+        "illumAtEnd": True,
+        "tStart": t_start,
+        "tTerminator": t_start + TimeDelta(4, format="sec"),
+        "tEnd": t_start + TimeDelta(8, format="sec"),
+    }
+    starts, ends = simsit.SimpleCadence(2.0, 3.0).get_times(pass_)
+    np.testing.assert_allclose((starts - t_start).sec, [0, 3, 6], atol=1e-10)
+    np.testing.assert_allclose((ends - t_start).sec, [2, 5, 8], atol=1e-10)
+    assert np.all(ends <= pass_["tEnd"])

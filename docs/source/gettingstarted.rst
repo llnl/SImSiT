@@ -99,6 +99,39 @@ If you are using ``GaiaStarCatalog``, configure:
 The expected directory layout and required columns should match the format used
 by the ``GaiaStarCatalog`` reader in the Python package.
 
+Raw Gaia tables use ``ra``/``dec`` in degrees, ``pmra``/``pmdec`` in
+milliarcseconds/year, ``parallax`` in milliarcseconds, and ``ref_epoch`` in
+Julian years. Legacy LSST-style trixels use J2000 ``coord_ra``/``coord_dec``
+and unit-bearing ``pm_ra``/``pm_dec``/``parallax`` columns. Magnitudes may
+come from Gaia's Vega ``phot_g_mean_mag`` (converted to AB), or from
+physical flux-density units such as nJy in ``phot_g_mean_flux``. Raw
+electron/second flux alone is insufficient without a release-specific
+photometric zeropoint. The legacy ``i_mag`` output is an AB Gaia G-band
+proxy, not a calibrated i-band color transformation.
+
+Units and reproducibility
+=========================
+
+Orbit states use GCRF meters and meters/second; observation times are Astropy
+``Time`` objects and FITS dates are TAI. Satellite positions use SSATK's
+geometric line of sight without light-time correction. Gaia stellar
+positions use the geocentric apparent-coordinate approximation. These
+approximations should not be interpreted as precision astrometry.
+
+Source magnitudes and sky surface brightness must be AB quantities in the
+same passband as the configured zeropoint. That zeropoint defines one
+incident photon/second before vignetting. Expected photon images receive
+vignetting first, then quantum efficiency (electrons/photon, default 1).
+Shot noise is added once, read noise is in electrons, and gain
+(electrons/ADU) converts the final image to ADU. ``nphot`` in truth tables
+and ``flux`` in sample metadata remain incident-photon counts.
+
+FITS records the conversion factors and ``PHOTZP``. ``MAGZP`` uses
+ADU/second, with deliberate calibration perturbation in the image header
+and the true value in the reference headers. Missing satellite magnitudes
+are NaN in FITS and null in YAML. The configuration seed controls all
+simulation randomness under fixed dependency versions.
+
 Notes
 =====
 

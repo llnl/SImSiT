@@ -106,6 +106,10 @@ def cvm_chi_squared_test(values, ndof, return_pvalue=False):
         raise ValueError("values must not be empty.")
     if ndof <= 0:
         raise ValueError("ndof must be positive.")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("values must be finite.")
+    if np.any(values < 0):
+        raise ValueError("values must be nonnegative.")
 
     values = np.sort(values)
     cdf = scipy.stats.chi2.cdf(values, ndof)
@@ -143,6 +147,8 @@ def cvm_statistic_to_pvalue(statistic, n):
     """
     if n < 5:
         raise ValueError("n must be >= 5")
+    if not np.isfinite(statistic) or statistic < 0:
+        raise ValueError("statistic must be finite and nonnegative.")
 
     statistic = (statistic - 0.4 / n + 0.6 / n**2) / (1 + 1 / n)
 
@@ -195,12 +201,16 @@ def pearson_bin_residuals(values, ndof, nbin):
         raise ValueError("ndof must be positive.")
     if nbin <= 0:
         raise ValueError("nbin must be positive.")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("values must be finite.")
+    if np.any(values < 0):
+        raise ValueError("values must be nonnegative.")
 
     quantiles = np.linspace(0.0, 1.0, nbin + 1)
     cuts = np.concatenate(
         [[-np.inf], scipy.stats.chi2.ppf(quantiles[1:-1], ndof), [np.inf]]
     )
-    bin_index = np.searchsorted(cuts, values) - 1
+    bin_index = np.searchsorted(cuts, values, side="right") - 1
 
     counts = np.bincount(bin_index, minlength=nbin)
     expected = len(values) / nbin

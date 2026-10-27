@@ -47,6 +47,20 @@ def radial_wcs(
 
     th = np.asarray(th, dtype=float)
     dthdr = np.asarray(dthdr, dtype=float)
+    if th.ndim != 1 or dthdr.ndim != 1 or th.size != dthdr.size:
+        raise ValueError("th and dthdr must be one-dimensional arrays of equal length.")
+    if th.size < 2:
+        raise ValueError("At least two radial samples are required.")
+    if not np.all(np.isfinite(th)) or not np.all(np.isfinite(dthdr)):
+        raise ValueError("th and dthdr must be finite.")
+    if th[0] != 0 or not np.all(np.diff(th) > 0) or th[-1] <= 0:
+        raise ValueError("th must be strictly increasing from zero.")
+    if np.any(dthdr <= 0):
+        raise ValueError("dthdr must be strictly positive.")
+    if not isinstance(n_control, (int, np.integer)) or n_control < 2:
+        raise ValueError("n_control must be an integer greater than one.")
+    if not isinstance(sip_order, (int, np.integer)) or sip_order < 1:
+        raise ValueError("sip_order must be a positive integer.")
 
     u = np.deg2rad(np.linspace(-th[-1], th[-1], n_control))
     u, v = np.meshgrid(u, u)
@@ -57,7 +71,10 @@ def radial_wcs(
     v = v[w]
     rho = rho[w]
 
-    interp = interp1d(th, dthdr, kind="cubic")  # deg -> arcsec/pix
+    kind = {2: "linear", 3: "quadratic"}.get(th.size, "cubic")
+    interp = interp1d(th, dthdr, kind=kind)  # deg -> arcsec/pix
+    if np.any(interp(np.linspace(th[0], th[-1], 1001)) <= 0):
+        raise ValueError("dthdr interpolation must remain strictly positive.")
     integrand = lambda arcsec: 1.0 / interp(arcsec / 3600.0)  # arcsec -> pix/arcsec
 
     x = np.empty_like(u)
