@@ -113,7 +113,7 @@ Units and reproducibility
 =========================
 
 Orbit states use GCRF meters and meters/second; observation times are Astropy
-``Time`` objects and FITS dates are TAI. Satellite positions use SSAPy's
+``Time`` objects and FITS dates are TAI. Satellite positions use SSATK's
 geometric line of sight without light-time correction. Gaia stellar
 positions use the geocentric apparent-coordinate approximation. These
 approximations should not be interpreted as precision astrometry.

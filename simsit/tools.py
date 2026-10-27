@@ -8,7 +8,7 @@ import sys
 import astropy.units as u
 import galsim
 import numpy as np
-import ssapy
+import ssatk
 from astropy.coordinates import AltAz, GCRS
 from astropy.table import Table
 from astropy.time import Time
@@ -144,7 +144,7 @@ def draw_sat(
 
     Parameters
     ----------
-    orbit : sequence of ssapy.Orbit
+    orbit : sequence of ssatk.Orbit
         Orbits to draw.
     t0 : astropy.time.Time
         Exposure start time.
@@ -158,13 +158,13 @@ def draw_sat(
         Point-spread function model.
     image : galsim.Image
         Output image to draw into.
-    observer : ssapy.EarthObserver
+    observer : ssatk.EarthObserver
         Observer location.
     nphot : sequence of float
         Photon counts for each orbit.
     nsplit : int, optional
         Number of time segments used to approximate motion during the exposure.
-    propagator : ssapy.Propagator, optional
+    propagator : object, optional
         Propagator used for orbit evaluation.
 
     Returns
@@ -197,7 +197,7 @@ def draw_sat(
     wcst = None
 
     for idx, orb in enumerate(orbit):
-        ra, dec, _ = ssapy.radec(orb, ts, observer=observer, propagator=propagator)
+        ra, dec, _ = ssatk.radec(orb, ts, observer=observer, propagator=propagator)
 
         xy0 = wcs0.posToImage(
             galsim.CelestialCoord(ra[0] * galsim.radians, dec[0] * galsim.radians)
@@ -283,7 +283,7 @@ def random_boresight(*, observer, t0, horizon, rng):
 
     Parameters
     ----------
-    observer : ssapy.EarthObserver
+    observer : ssatk.EarthObserver
         Observer location.
     t0 : astropy.time.Time
         Observation time.
@@ -356,20 +356,20 @@ def generate_orbit(height, coord, heading, vperp, vpar, observer, t0):
         Velocity component perpendicular to the radius vector, in m/s.
     vpar : float
         Velocity component parallel to the radius vector, in m/s.
-    observer : ssapy.EarthObserver
+    observer : ssatk.EarthObserver
         Observer location.
     t0 : astropy.time.Time
         Reference time.
 
     Returns
     -------
-    ssapy.Orbit
+    ssatk.Orbit
         Constructed orbit.
     """
     r_obs, _ = observer.getRV(t0)
     los = np.array(coord.get_xyz())
     b = 2 * np.dot(los, r_obs)
-    c = np.sum(r_obs**2) - (ssapy.constants.WGS72_EARTH_RADIUS + height) ** 2
+    c = np.sum(r_obs**2) - (ssatk.constants.WGS72_EARTH_RADIUS + height) ** 2
     disc = b**2 - 4 * c
     if not np.isfinite(disc) or disc < 0:
         raise ValueError("Line of sight does not intersect the requested altitude shell.")
@@ -389,16 +389,16 @@ def generate_orbit(height, coord, heading, vperp, vpar, observer, t0):
     n_head = north_los * np.cos(heading)
     n_head += east_los * np.sin(heading)
 
-    n_sat = ssapy.utils.normed(r_sat)
+    n_sat = ssatk.normed(r_sat)
     vpar3 = n_sat * vpar
     vperp3 = n_head - n_sat * np.dot(n_head, n_sat)
-    tangent_norm = ssapy.utils.norm(vperp3)
+    tangent_norm = ssatk.norm(vperp3)
     if tangent_norm < 1e-12:
         raise ValueError("Heading has no component tangent to the altitude shell.")
     vperp3 *= vperp / tangent_norm
     v_sat = vperp3 + vpar3
 
-    return ssapy.Orbit(r_sat, v_sat, t0)
+    return ssatk.Orbit(r_sat, v_sat, t0)
 
 
 def get_line_gsobject(p0, p1):

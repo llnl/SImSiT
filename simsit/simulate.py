@@ -11,7 +11,7 @@ import astropy.units as u
 import galsim
 import numpy as np
 import simsit
-import ssapy
+import ssatk
 import yaml
 from astropy.time import Time
 from tqdm import tqdm
@@ -294,7 +294,7 @@ def simulate(config):
 
     reference_example_hdul = fits.HDUList([fits.PrimaryHDU()])
     reference_hdul = fits.HDUList([fits.PrimaryHDU()])
-    propagator = ssapy.KeplerianPropagator()
+    propagator = ssatk.KeplerianPropagator()
 
     for i_obs in tqdm(range(config["n_obs"])):
         with simsit.tools.nostdout():
@@ -303,7 +303,7 @@ def simulate(config):
             exptime = rng.choice(config["cadence"]["exptime"])
             site = astroplan.Observer.at_site(rng.choice(config["sites"]))
 
-            observer = ssapy.EarthObserver(
+            observer = ssatk.EarthObserver(
                 lon=site.location.lon.to(u.deg).value,
                 lat=site.location.lat.to(u.deg).value,
                 elevation=site.location.height.to(u.m).value,
@@ -410,9 +410,9 @@ def simulate(config):
 
             if tracker_cfg["type"] == "orbit":
                 t_prev = t0 - tracking_error["t_rewind"] * u.min
-                r_prev, v_prev = ssapy.rv(orbit, t_prev, propagator=propagator)
+                r_prev, v_prev = ssatk.rv(orbit, t_prev, propagator=propagator)
                 v_prev += rng.normal(scale=tracking_error["v_perturb"], size=3)
-                tracking_orbit = ssapy.Orbit(r_prev, v_prev, t_prev)
+                tracking_orbit = ssatk.Orbit(r_prev, v_prev, t_prev)
                 tracker = simsit.OrbitTracker(
                     orbit=tracking_orbit,
                     observer=observer,

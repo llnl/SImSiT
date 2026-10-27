@@ -8,7 +8,7 @@ models for instrument response, world coordinate systems, tracking behavior,
 observation cadence, and catalog-based source generation.
 
 Built on top of [GalSim](https://github.com/GalSim-developers/GalSim) and
-[SSAPy](https://github.com/LLNL/SSAPy), SImSiT can be used to create realistic
+[SSATK](https://github.com/LLNL/ssatk), SImSiT can be used to create realistic
 simulated image data for developing and testing algorithms related to satellite
 imaging, detection, photometry, calibration, and related analysis workflows.
 
@@ -30,9 +30,10 @@ documentation for expected file layout and configuration options.
 
 ## Simulation Conventions
 
-SImSiT remains the image-generation layer. Orbit propagation and observer
-geometry use SSAPy; shared SSATK geometry and brightness models can feed this
-layer without duplicating PSF, WCS, or detector rendering.
+SImSiT is the image-generation layer. SSATK supplies orbit propagation,
+observer geometry, constants, and the astrodynamics interface. Its shared
+geometry and brightness models can feed this layer without duplicating PSF,
+WCS, or detector rendering. Python 3.10 or newer is required.
 
 - Orbit states are in GCRF, in meters and meters/second. Observation times are
   explicit Astropy `Time` objects; FITS dates use TAI. Bare cadence durations

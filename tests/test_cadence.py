@@ -2,7 +2,7 @@ import astropy.units as u
 import numpy as np
 import pytest
 import simsit
-import ssapy
+import ssatk
 from astropy.time import Time
 from astropy.time import TimeDelta
 
@@ -14,8 +14,8 @@ def test_simple_cadence():
 
     rng = np.random.default_rng(1234)
     t0 = Time("2010-01-01T00:00:00")
-    orbit = ssapy.Orbit.fromKeplerianElements(
-        ssapy.constants.WGS72_EARTH_RADIUS + rng.uniform(400e3, 1000e3),
+    orbit = ssatk.Orbit.fromKeplerianElements(
+        ssatk.constants.WGS72_EARTH_RADIUS + rng.uniform(400e3, 1000e3),
         rng.uniform(0.001, 0.002),
         np.deg2rad(60.0 + rng.uniform(-5.0, 5.0)),
         rng.uniform(0.0, 2 * np.pi),
@@ -33,7 +33,7 @@ def test_simple_cadence():
     observers = []
     for _ in range(4):
         observers.append(
-            ssapy.EarthObserver(
+            ssatk.EarthObserver(
                 lon=rng.uniform(0.0, 360.0),
                 lat=rng.uniform(30.0, 70.0),
                 elevation=rng.uniform(100.0, 3000.0),
@@ -41,10 +41,10 @@ def test_simple_cadence():
             )
         )
 
-    prop = ssapy.propagator.KeplerianPropagator()
+    prop = ssatk.KeplerianPropagator()
 
     try:
-        passes = ssapy.compute.find_passes(
+        passes = ssatk.ssapy.compute.find_passes(
             orbit,
             observers,
             t0,
@@ -54,11 +54,11 @@ def test_simple_cadence():
             horizon=np.deg2rad(10.0),
         )
     except Exception as exc:
-        pytest.skip(f"Skipping cadence integration test due to external ssapy/IERS issue: {exc}")
+        pytest.skip(f"Skipping cadence integration test due to external backend/IERS issue: {exc}")
 
     for observer, times in passes.items():
         for time in times[:2]:
-            refinement = ssapy.compute.refine_pass(
+            refinement = ssatk.ssapy.compute.refine_pass(
                 orbit,
                 observer,
                 time,
@@ -71,7 +71,7 @@ def test_simple_cadence():
             np.testing.assert_allclose(np.diff(t_end.gps), delay.to(u.s).value)
             np.testing.assert_allclose(np.diff(t_start.gps), delay.to(u.s).value)
 
-            alt, az = ssapy.quickAltAz(
+            alt, az = ssatk.quickAltAz(
                 refinement["orbit"],
                 t_start,
                 refinement["observer"],
@@ -79,13 +79,13 @@ def test_simple_cadence():
             )
             assert np.all(alt >= np.deg2rad(10.0 - 1 / 60))
 
-            r, v = ssapy.rv(
+            r, v = ssatk.rv(
                 refinement["orbit"],
                 t_start,
                 propagator=refinement["propagator"],
             )
-            r_par, r_perp = ssapy.compute.earthShadowCoords(r, t_start)
-            shadow_height = r_perp - ssapy.constants.WGS72_EARTH_RADIUS
+            r_par, r_perp = ssatk.ssapy.compute.earthShadowCoords(r, t_start)
+            shadow_height = r_perp - ssatk.constants.WGS72_EARTH_RADIUS
 
             assert np.all((r_par < 1) | (shadow_height > -1))
 

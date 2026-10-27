@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 
 import galsim
 import numpy as np
-import ssapy
+import ssatk
 
 __all__ = [
     "Tracker",
@@ -70,9 +70,9 @@ class OrbitTracker(Tracker):
 
     Parameters
     ----------
-    orbit : ssapy.Orbit
+    orbit : ssatk.Orbit
         Orbit to track.
-    observer : ssapy.EarthObserver
+    observer : ssatk.EarthObserver
         Observer location.
     t0 : astropy.time.Time
         Reference time for tracking.
@@ -80,7 +80,7 @@ class OrbitTracker(Tracker):
         Camera rotation angle at the reference time.
     mount : {'EQ'}, optional
         Mount type. Only equatorial mounts are currently supported.
-    propagator : ssapy.Propagator, optional
+    propagator : object, optional
         Propagator used to predict object motion.
     """
 
@@ -110,7 +110,7 @@ class OrbitTracker(Tracker):
         galsim.CelestialCoord
             Apparent right ascension and declination of the tracked object.
         """
-        ra, dec, _ = ssapy.radec(
+        ra, dec, _ = ssatk.radec(
             self.orbit,
             time,
             observer=self.observer,
@@ -301,10 +301,14 @@ def transform_wcs(wcs0, boresight1, rot_sky_pos1):
         # those coordinates, then factor the resulting linear term into CD.
         # This preserves the identity linear terms required by FITS SIP.
         composed = _compose_sip_with_linear_map(wcs.ab, rotation)
-        identity = np.array([[0.0, 1.0], [1.0, 0.0]])
-        linear = identity @ rotation @ identity
+        linear = np.column_stack((composed[:, 1, 0], composed[:, 0, 1]))
         wcs.ab = np.tensordot(np.linalg.inv(linear), composed, axes=(1, 0))
         wcs.cd = wcs.cd @ linear
+        # Remove roundoff in the factored terms: FITS SIP requires an exact
+        # identity linear map, not tiny residual linear distortion.
+        wcs.ab[:, 0, 0] = 0.0
+        wcs.ab[:, 1, 0] = [1.0, 0.0]
+        wcs.ab[:, 0, 1] = [0.0, 1.0]
         wcs.abp = None
 
     for attr in ("cdinv",):

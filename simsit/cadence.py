@@ -62,7 +62,7 @@ class SimpleCadence:
         ----------
         ``pass_`` : dict
             Pass description, typically returned by
-            ``ssapy.compute.refine_pass``.
+            ``ssatk.ssapy.compute.refine_pass``.
 
         Returns
         -------

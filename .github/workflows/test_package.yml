@@ -57,5 +57,6 @@ jobs:
       - name: Test installed wheel outside the source tree
         run: |
           cp -r tests "$RUNNER_TEMP/simsit-tests"
+          cp pyproject.toml "$RUNNER_TEMP/pyproject.toml"
           cd "$RUNNER_TEMP"
           python3 -m pytest simsit-tests -m "not integration"

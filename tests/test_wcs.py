@@ -155,3 +155,21 @@ def test_transform_wcs_serialized_sip_matches_astropy_and_fresh_wcs():
     x_fresh, y_fresh = expected.radecToxy(ra, dec, units="degrees")
     np.testing.assert_allclose(x_galsim, x_fresh, rtol=0, atol=2e-3)
     np.testing.assert_allclose(y_galsim, y_fresh, rtol=0, atol=2e-3)
+
+
+def test_transform_wcs_factors_noncanonical_linear_roundoff():
+    center = galsim.CelestialCoord(10 * galsim.degrees, 20 * galsim.degrees)
+    wcs = radial_wcs([0, 1], [25, 25], center)
+    wcs.ab[0, 1, 0] = np.nextafter(1.0, 2.0)
+    wcs.ab[1, 0, 1] = np.nextafter(1.0, 2.0)
+    transformed = transform_wcs(wcs, center, 37 * galsim.degrees)
+    np.testing.assert_array_equal(transformed.ab[:, 1, 0], [1.0, 0.0])
+    np.testing.assert_array_equal(transformed.ab[:, 0, 1], [0.0, 1.0])
+    header = fits.Header()
+    transformed.writeToFitsHeader(header, galsim.BoundsI(1, 100, 1, 100))
+    for key in ("A_0_0", "A_1_0", "A_0_1", "B_0_0", "B_1_0", "B_0_1"):
+        assert header.get(key, 0.0) == 0.0
+    # Constant plate scale independently fixes radius; rotation must preserve it.
+    x, y = transformed.radecToxy(np.array([10.01]), np.array([20.0]), units="degrees")
+    expected_radius = 0.01 * np.cos(np.deg2rad(20.0)) * 3600 / 25
+    np.testing.assert_allclose(np.hypot(x, y), expected_radius, atol=1e-4, rtol=0)

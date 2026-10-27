@@ -1,7 +1,7 @@
 import galsim
 import numpy as np
 import pytest
-import ssapy
+import ssatk
 from astropy.table import Table
 from astropy.time import Time
 
@@ -11,7 +11,7 @@ from simsit.tools import draw_stars, generate_orbit, get_line_gsobject
 
 class RadialObserver:
     def __init__(self, coord):
-        self.position = ssapy.constants.WGS72_EARTH_RADIUS * np.array(coord.get_xyz())
+        self.position = ssatk.constants.WGS72_EARTH_RADIUS * np.array(coord.get_xyz())
 
     def getRV(self, time):
         return self.position, np.zeros(3)
@@ -31,7 +31,7 @@ def test_orbit_heading_against_spherical_tangent_basis(dec, heading):
     east = np.array([-np.sin(ra), np.cos(ra), 0])
     expected = 7800 * (north * np.cos(heading) + east * np.sin(heading)) + 10 * radial
     np.testing.assert_allclose(orbit.v, expected, rtol=0, atol=1e-9)
-    np.testing.assert_allclose(np.linalg.norm(orbit.r), ssapy.constants.WGS72_EARTH_RADIUS + 500e3)
+    np.testing.assert_allclose(np.linalg.norm(orbit.r), ssatk.constants.WGS72_EARTH_RADIUS + 500e3)
 
 
 def test_deterministic_expected_star_flux():

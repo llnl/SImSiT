@@ -2,7 +2,8 @@
 Installation
 ============
 
-The recommended way to install SImSiT is using `pip <https://pip.pypa.io/en/stable/>`_
+Python 3.10 or newer is required. The recommended way to install SImSiT is
+using `pip <https://pip.pypa.io/en/stable/>`_
 
 .. code-block:: console
 
