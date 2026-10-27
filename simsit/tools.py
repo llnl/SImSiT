@@ -64,6 +64,8 @@ def draw_stars(stars, *, t0, exptime, wcs0, tracker, psf, image, nsplit=2):
         - ``x``, ``y``: image coordinates at exposure midpoint
         - ``x_FITS``, ``y_FITS``: FITS-style pixel coordinates
     """
+    if not isinstance(nsplit, (int, np.integer)) or nsplit <= 0:
+        raise ValueError("nsplit must be a positive integer.")
     dt = exptime / nsplit * u.s
     ras = []
     decs = []
@@ -111,7 +113,7 @@ def draw_stars(stars, *, t0, exptime, wcs0, tracker, psf, image, nsplit=2):
             stamp = (obj * star["nphot"] / nsplit).drawImage(
                 wcs=local_wcs,
                 center=xy,
-                method="phot",
+                method="auto",
             )
             bounds = stamp.bounds & image.bounds
             if bounds.area() > 0:
@@ -177,8 +179,8 @@ def draw_sat(
 
     if len(orbit) != len(nphot):
         raise ValueError("orbit and nphot must have the same length.")
-    if nsplit <= 0:
-        raise ValueError("nsplit must be positive.")
+    if not isinstance(nsplit, (int, np.integer)) or nsplit <= 0:
+        raise ValueError("nsplit must be a positive integer.")
 
     table = Table()
     ra0 = []
@@ -224,7 +226,7 @@ def draw_sat(
             stamp = (obj * nphot[idx] / nsplit).drawImage(
                 wcs=local_wcs,
                 center=xy,
-                method="phot",
+                method="auto",
             )
             bounds = stamp.bounds & image.bounds
             if bounds.area() > 0:
@@ -302,7 +304,7 @@ def random_boresight(*, observer, t0, horizon, rng):
 
     location = observer._location  # Replace with a public accessor if available.
     sc = AltAz(az * u.rad, alt * u.rad, obstime=t0, location=location)
-    radec = sc.transform_to(GCRS())
+    radec = sc.transform_to(GCRS(obstime=t0))
     return galsim.CelestialCoord(
         radec.ra.rad * galsim.radians,
         radec.dec.rad * galsim.radians,
@@ -369,26 +371,31 @@ def generate_orbit(height, coord, heading, vperp, vpar, observer, t0):
     b = 2 * np.dot(los, r_obs)
     c = np.sum(r_obs**2) - (ssapy.constants.WGS72_EARTH_RADIUS + height) ** 2
     disc = b**2 - 4 * c
+    if not np.isfinite(disc) or disc < 0:
+        raise ValueError("Line of sight does not intersect the requested altitude shell.")
     rho = (-b + np.sqrt(disc)) / 2
+    if rho <= 0:
+        raise ValueError("Altitude shell must intersect the forward line of sight.")
     r_sat = r_obs + rho * los
 
     alpha = coord.ra
     delta = coord.dec
     north_los = np.array([
-        -np.cos(delta) * np.cos(alpha),
-        -np.cos(delta) * np.sin(alpha),
-        np.sin(delta),
+        -np.sin(delta) * np.cos(alpha),
+        -np.sin(delta) * np.sin(alpha),
+        np.cos(delta),
     ])
-    axis = np.array(coord.get_xyz())
-
+    east_los = np.array([-np.sin(alpha), np.cos(alpha), 0.0])
     n_head = north_los * np.cos(heading)
-    n_head += np.cross(axis, north_los) * np.sin(heading)
-    n_head += axis * np.dot(axis, north_los) * (1 - np.cos(heading))
+    n_head += east_los * np.sin(heading)
 
     n_sat = ssapy.utils.normed(r_sat)
     vpar3 = n_sat * vpar
     vperp3 = n_head - n_sat * np.dot(n_head, n_sat)
-    vperp3 *= vperp / ssapy.utils.norm(vperp3)
+    tangent_norm = ssapy.utils.norm(vperp3)
+    if tangent_norm < 1e-12:
+        raise ValueError("Heading has no component tangent to the altitude shell.")
+    vperp3 *= vperp / tangent_norm
     v_sat = vperp3 + vpar3
 
     return ssapy.Orbit(r_sat, v_sat, t0)

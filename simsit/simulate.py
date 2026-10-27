@@ -4,7 +4,6 @@ Generate synthetic observations containing stars and satellites.
 
 import glob
 import os
-import random
 
 import astroplan
 import astropy.io.fits as fits
@@ -16,6 +15,7 @@ import ssapy
 import yaml
 from astropy.time import Time
 from tqdm import tqdm
+from .tracker import transform_wcs as _transform_wcs
 
 
 def make_image(config, rng, parameters):
@@ -95,6 +95,7 @@ def make_image(config, rng, parameters):
         length=length,
         psf_fwhm=psf_fwhm,
         sky_phot=sky_phot,
+        exptime=exptime,
     )
     stars = stars[stars["SNR"] > config["catalog"]["min_snr"]]
     print(f"{len(stars) = }")
@@ -132,7 +133,9 @@ def make_image(config, rng, parameters):
         propagator=propagator,
     )
 
-    sats["i_mag"] = sat_mags
+    if wcst is None:
+        wcst = _transform_wcs(wcs0, p1, tracker.get_rot_sky_pos(t0 + exptime * u.s))
+    sats["i_mag"] = [np.nan if mag is None else mag for mag in sat_mags]
     instrument.apply_vignetting(image)
     instrument.apply_noise(image, sky_phot, rng)
 
@@ -169,7 +172,7 @@ def make_image(config, rng, parameters):
                 "dec0": float(sat["dec0"] + rng.uniform(0, sigma_sky_deg)),
                 "ra1": float((sat["ra1"] + rng.uniform(0, sigma_sky_deg)) % 360.0),
                 "dec1": float(sat["dec1"] + rng.uniform(0, sigma_sky_deg)),
-                "mag": float(sat["i_mag"]),
+                "mag": None if np.isnan(sat["i_mag"]) else float(sat["i_mag"]),
             }
         )
 
@@ -217,7 +220,18 @@ def make_image(config, rng, parameters):
     hdu.header["OBSGEO-X"] = (obsx, "ITRS (m)")
     hdu.header["OBSGEO-Y"] = (obsy, "ITRS (m)")
     hdu.header["OBSGEO-Z"] = (obsz, "ITRS (m)")
-    hdu.header["MAGZP"] = zp + rng.uniform(-0.1, 0.1)
+    adu_zp = zp + 2.5 * np.log10(instrument.quantum_efficiency / instrument.gain)
+    hdu.header["MAGZP"] = adu_zp + rng.uniform(-0.1, 0.1)
+    for header in (hdu.header, hdu_true_wcs_start.header, hdu_true_wcs_end.header):
+        header["PHOTZP"] = (zp, "AB magnitude for one incident photon/sec")
+        header["GAIN"] = (instrument.gain, "electrons/ADU")
+        header["RDNOISE"] = (instrument.read_noise, "electrons")
+        header["QE"] = (instrument.quantum_efficiency, "electrons/photon")
+        header["EXPTIME"] = (exptime, "seconds")
+        header["MAGSYS"] = "AB"
+    hdu.header["BUNIT"] = "ADU"
+    hdu_true_wcs_start.header["MAGZP"] = adu_zp
+    hdu_true_wcs_end.header["MAGZP"] = adu_zp
 
     htmp = hdu_true_wcs_start.header
     crpix = htmp["CRPIX1"], htmp["CRPIX2"]
@@ -273,11 +287,13 @@ def simulate(config):
     instrument = simsit.Instrument.from_config(config["instrument"])
 
     sample_metadata = []
+    example_metadata = []
     if "meta" in config:
         sample_metadata.append(config["meta"])
+        example_metadata.append(config["meta"])
 
-    reference_example_hdul = fits.HDUList()
-    reference_hdul = fits.HDUList()
+    reference_example_hdul = fits.HDUList([fits.PrimaryHDU()])
+    reference_hdul = fits.HDUList([fits.PrimaryHDU()])
     propagator = ssapy.KeplerianPropagator()
 
     for i_obs in tqdm(range(config["n_obs"])):
@@ -352,17 +368,18 @@ def simulate(config):
                 sat_mags = [sat_mag]
 
             elif config["n_sat"] == 2:
-                ra_offset_arcsec = random.choice((-1, 1)) * psf_fwhm * random.uniform(0.2, 1.5)
-                dec_offset_arcsec = random.choice((-1, 1)) * psf_fwhm * random.uniform(0.2, 1.5)
+                ra_offset_arcsec = rng.choice((-1, 1)) * psf_fwhm * rng.uniform(0.2, 1.5)
+                dec_offset_arcsec = rng.choice((-1, 1)) * psf_fwhm * rng.uniform(0.2, 1.5)
 
                 print(f"{ra_offset_arcsec = } arcsec")
                 print(f"{dec_offset_arcsec = } arcsec")
 
                 orbit2 = simsit.tools.generate_orbit(
                     sat_height,
-                    galsim.CelestialCoord(
-                        ra=(sat_coord.ra.rad + ra_offset_arcsec * 4.84814e-6) * galsim.radians,
-                        dec=(sat_coord.dec.rad + dec_offset_arcsec * 4.84814e-6) * galsim.radians,
+                    sat_coord.deproject(
+                        -ra_offset_arcsec * galsim.arcsec,
+                        dec_offset_arcsec * galsim.arcsec,
+                        projection="gnomonic",
                     ),
                     heading,
                     vperp,
@@ -377,7 +394,7 @@ def simulate(config):
                     mag_min, mag_max = config["sat"]["mag_range"]
                     mag_bound_1 = max(-1.5, mag_min - sat_mag)
                     mag_bound_2 = min(1.5, mag_max - sat_mag)
-                    mag_offset = random.uniform(mag_bound_1, mag_bound_2)
+                    mag_offset = rng.uniform(mag_bound_1, mag_bound_2)
                     sat_mag2 = sat_mag + mag_offset
                     print(f"{mag_offset = } mag")
 
@@ -442,6 +459,7 @@ def simulate(config):
             if i_obs < config["n_example"]:
                 reference_example_hdul.append(reference_hdulist[0])
                 reference_example_hdul.append(reference_hdulist[1])
+                example_metadata.append(image_metadata)
 
             sample_metadata.append(image_metadata)
 
@@ -467,7 +485,7 @@ def simulate(config):
         f"sample_metadata_{config['n_example']}.yaml",
     )
     with open(example_metadata_filename, "w") as f:
-        yaml.safe_dump_all(sample_metadata[: config["n_example"] + 1], f)
+        yaml.safe_dump_all(example_metadata, f)
 
     reference_hdul.writeto(
         os.path.join(config["outdir"], reference_dir, "reference_truth.fits"),
@@ -494,14 +512,20 @@ def make_sky_flat(configfile):
     image_dir = config.get("image_dir", "images")
     data_path = os.path.join(config["outdir"], image_dir)
 
-    all_files = glob.glob(os.path.join(data_path, "????.fits"))
-    files = random.sample(all_files, 1000) if len(all_files) >= 1000 else all_files
+    all_files = sorted(glob.glob(os.path.join(data_path, "????.fits")))
+    if not all_files:
+        raise ValueError(f"No simulated images found in {data_path}.")
+    rng = np.random.default_rng(config["seed"])
+    files = rng.choice(all_files, 1000, replace=False) if len(all_files) > 1000 else all_files
 
     all_images = []
     for filename in tqdm(files, desc="Creating sky flat", leave=True):
         image = fits.getdata(filename)
         image_flattened = image.flatten()
-        normalized_image = image_flattened / np.median(image_flattened)
+        median = np.median(image_flattened)
+        if not np.isfinite(image_flattened).all() or not np.isfinite(median) or median <= 0:
+            raise ValueError(f"Sky-flat input must be finite with a positive median: {filename}")
+        normalized_image = image_flattened / median
         all_images.append(normalized_image)
 
     median_image = np.median(np.vstack(all_images), axis=0)

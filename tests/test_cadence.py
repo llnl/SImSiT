@@ -4,6 +4,7 @@ import pytest
 import simsit
 import ssapy
 from astropy.time import Time
+from astropy.time import TimeDelta
 
 
 def test_simple_cadence():
@@ -87,3 +88,53 @@ def test_simple_cadence():
             shadow_height = r_perp - ssapy.constants.WGS72_EARTH_RADIUS
 
             assert np.all((r_par < 1) | (shadow_height > -1))
+
+
+def test_simple_cadence_float_seconds_and_boundary():
+    cadence = simsit.SimpleCadence(2.0, 5.0)
+    t0 = Time("2020-01-01T00:00:00")
+    pass_ = {
+        "illumAtStart": True,
+        "illumAtEnd": False,
+        "tStart": t0,
+        "tTerminator": t0 + TimeDelta(11, format="sec"),
+        "tEnd": t0 + TimeDelta(20, format="sec"),
+    }
+
+    starts, ends = cadence.get_times(pass_)
+    np.testing.assert_allclose((starts - t0).sec, [0, 5])
+    np.testing.assert_allclose((ends - t0).sec, [2, 7])
+    assert np.all(ends <= pass_["tTerminator"])
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_simple_cadence_rejects_nonfinite_float(value):
+    with pytest.raises(ValueError, match="finite"):
+        simsit.SimpleCadence(value, 1.0)
+    with pytest.raises(ValueError, match="finite"):
+        simsit.SimpleCadence(1.0, value)
+
+
+def test_simple_cadence_accepts_quantity_and_timedelta():
+    cadence = simsit.SimpleCadence(1.0 * u.s, TimeDelta(3, format="sec"))
+    assert cadence.exptime.sec == 1
+    assert cadence.delay.sec == 3
+
+
+def test_simple_cadence_rejects_timedelta_arrays_and_hits_scaled_boundary():
+    with pytest.raises(ValueError, match="scalar"):
+        simsit.SimpleCadence(TimeDelta([1, 2], format="sec"), 1.0)
+
+    t0 = Time("2020-01-01T00:00:00")
+    t_start = t0 + TimeDelta(123456.7, format="sec")
+    pass_ = {
+        "illumAtStart": True,
+        "illumAtEnd": True,
+        "tStart": t_start,
+        "tTerminator": t_start + TimeDelta(4, format="sec"),
+        "tEnd": t_start + TimeDelta(8, format="sec"),
+    }
+    starts, ends = simsit.SimpleCadence(2.0, 3.0).get_times(pass_)
+    np.testing.assert_allclose((starts - t_start).sec, [0, 3, 6], atol=1e-10)
+    np.testing.assert_allclose((ends - t_start).sec, [2, 5, 8], atol=1e-10)
+    assert np.all(ends <= pass_["tEnd"])

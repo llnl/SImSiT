@@ -9,3 +9,4 @@ astroquery
 lsst-sphgeom
 PyYAML
 llnl-ssapy
+tqdm

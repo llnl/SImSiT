@@ -294,13 +294,62 @@ def transform_wcs(wcs0, boresight1, rot_sky_pos1):
 
     wcs = wcs0.copy()
     rotation = np.array([[cos_theta, -sin_theta], [sin_theta, cos_theta]])
-    wcs.cd = rotation @ wcs.cd
+    if wcs.ab is None:
+        wcs.cd = rotation @ wcs.cd
+    else:
+        # SIP distortion is evaluated in pixel coordinates before CD. Rotate
+        # those coordinates, then factor the resulting linear term into CD.
+        # This preserves the identity linear terms required by FITS SIP.
+        composed = _compose_sip_with_linear_map(wcs.ab, rotation)
+        identity = np.array([[0.0, 1.0], [1.0, 0.0]])
+        linear = identity @ rotation @ identity
+        wcs.ab = np.tensordot(np.linalg.inv(linear), composed, axes=(1, 0))
+        wcs.cd = wcs.cd @ linear
+        wcs.abp = None
 
-    if hasattr(wcs, "cdinv"):
-        del wcs.cdinv
+    for attr in ("cdinv",):
+        if hasattr(wcs, attr):
+            delattr(wcs, attr)
 
     wcs.center = boresight1
     return wcs
+
+
+def _compose_sip_with_linear_map(ab, matrix):
+    """Compose each SIP polynomial with ``(x, y) -> matrix @ (x, y)``."""
+    order = ab.shape[1] - 1
+    result = np.zeros_like(ab)
+
+    def multiply(left, right):
+        out = np.zeros((order + 1, order + 1))
+        for (i, j), value in np.ndenumerate(left):
+            if value == 0:
+                continue
+            for (k, l), other in np.ndenumerate(right):
+                if i + k <= order and j + l <= order:
+                    out[i + k, j + l] += value * other
+        return out
+
+    def power_linear(a, b, exponent):
+        polynomial = np.zeros((order + 1, order + 1))
+        polynomial[0, 0] = 1
+        base = np.zeros_like(polynomial)
+        base[0, 1] = a
+        base[1, 0] = b
+        for _ in range(exponent):
+            polynomial = multiply(polynomial, base)
+        return polynomial
+
+    for component in range(ab.shape[0]):
+        for i in range(order + 1):
+            for j in range(order + 1 - i):
+                coefficient = ab[component, i, j]
+                if coefficient == 0:
+                    continue
+                term = multiply(power_linear(matrix[1, 0], matrix[1, 1], i),
+                                power_linear(matrix[0, 0], matrix[0, 1], j))
+                result[component] += coefficient * term
+    return result
 
 
 SiderealTracker = sidereal_tracker

@@ -20,6 +20,8 @@ class Instrument:
         Detector gain in electrons per ADU.
     read_noise : float
         Read noise in electrons.
+    quantum_efficiency : float, optional
+        Detected electrons per incident photon, greater than zero and at most one.
     pixel_scale : float
         Physical pixel size in microns.
     aperture : float
@@ -49,7 +51,17 @@ class Instrument:
         obscuration=0.0,
         distortion=None,
         vignetting=None,
+        quantum_efficiency=1.0,
     ):
+        if (len(image_shape) != 2
+                or any(not isinstance(n, (int, np.integer)) or n <= 0 for n in image_shape)):
+            raise ValueError("image_shape must contain two positive integers.")
+        if not np.isfinite(gain) or gain <= 0:
+            raise ValueError("gain must be finite and positive.")
+        if not np.isfinite(read_noise) or read_noise < 0:
+            raise ValueError("read_noise must be finite and nonnegative.")
+        if not np.isfinite(quantum_efficiency) or not 0 < quantum_efficiency <= 1:
+            raise ValueError("quantum_efficiency must be greater than zero and at most one.")
         self.image_shape = image_shape
         self.gain = gain
         self.read_noise = read_noise
@@ -58,17 +70,21 @@ class Instrument:
         self.obscuration = obscuration
         self.distortion = distortion
         self.vignetting = vignetting
+        self.quantum_efficiency = quantum_efficiency
 
         if vignetting is not None:
-            from scipy.interpolate import interp1d
+            from scipy.interpolate import PchipInterpolator
 
-            self.vigfun = interp1d(
-                vignetting["th"],
-                vignetting["unvig"],
-                kind="cubic",
-                bounds_error=False,
-                fill_value=(vignetting["unvig"][0], vignetting["unvig"][-1]),
-            )
+            angles = np.asarray(vignetting["th"], dtype=float)
+            throughput = np.asarray(vignetting["unvig"], dtype=float)
+            if (angles.ndim != 1 or throughput.shape != angles.shape
+                    or len(angles) < 2 or not np.isfinite(angles).all()
+                    or not np.isfinite(throughput).all() or angles[0] != 0
+                    or np.any(np.diff(angles) <= 0)
+                    or np.any((throughput < 0) | (throughput > 1))):
+                raise ValueError("vignetting requires increasing angles from zero and fractions in [0, 1].")
+            interpolator = PchipInterpolator(angles, throughput)
+            self.vigfun = lambda angle: interpolator(np.clip(angle, angles[0], angles[-1]))
 
     @staticmethod
     def from_config(config):
@@ -94,6 +110,7 @@ class Instrument:
             obscuration=config.get("obscuration", 0.0),
             distortion=config.get("distortion"),
             vignetting=config.get("vignetting"),
+            quantum_efficiency=config.get("quantum_efficiency", 1.0),
         )
 
     def init_image(self, *, sky_phot, exptime):
@@ -113,7 +130,8 @@ class Instrument:
             Image initialized with sky background.
         """
         nx, ny = self.image_shape
-        bounds = galsim.BoundsI(-nx // 2, nx // 2 - 1, -ny // 2, ny // 2 - 1)
+        xmin, ymin = -(nx // 2), -(ny // 2)
+        bounds = galsim.BoundsI(xmin, xmin + nx - 1, ymin, ymin + ny - 1)
         image = galsim.Image(bounds)
 
         boresight = galsim.CelestialCoord(0 * galsim.degrees, 0 * galsim.degrees)
@@ -156,27 +174,31 @@ class Instrument:
         mock_wcs = self.get_wcs(boresight, rot_sky_pos)
 
         xx, yy = image.get_pixel_centers()
-        rr = np.hypot(xx, yy)
-        rr *= np.sqrt(mock_wcs.pixelArea(galsim.PositionD(0, 0)))  # arcsec
-        image.array[:] *= self.vigfun(rr / 3600.0)
+        ra, dec = mock_wcs.xyToradec(xx, yy, units="radians")
+        radius = np.arctan2(
+            np.hypot(np.cos(dec) * np.sin(ra), np.sin(dec)),
+            np.cos(dec) * np.cos(ra),
+        )
+        image.array[:] *= self.vigfun(np.rad2deg(radius))
 
     def apply_noise(self, image, sky_phot, rng):
         """
-        Add CCD noise to an image in place.
+        Convert expected incident photons to ADU and add CCD noise once.
 
         Parameters
         ----------
         image : galsim.Image
             Image to modify.
         sky_phot : float
-            Sky level in photons / arcsec^2 / sec.
+            Retained for compatibility; sky is already included in ``image``.
         rng : numpy.random.Generator
             Random number generator.
         """
-        gsrng = galsim.BaseDeviate(rng.bit_generator.random_raw() % (2**63))
+        image.array[:] *= self.quantum_efficiency / self.gain
+        gsrng = galsim.BaseDeviate(int(rng.integers(1, 2**31)))
         noise = galsim.CCDNoise(
             gsrng,
-            sky_level=sky_phot * self.pix_size**2,
+            sky_level=0.0,
             gain=self.gain,
             read_noise=self.read_noise,
         )
@@ -271,7 +293,7 @@ class Instrument:
         lsst_reference_zp = 32.36
         return self.compute_scaled_zp(lsst_area, lsst_reference_zp)
 
-    def streak_snr(self, *, nphot, length, psf_fwhm, sky_phot):
+    def streak_snr(self, *, nphot, length, psf_fwhm, sky_phot, exptime=1.0):
         """
         Compute the signal-to-noise ratio for a linear streak.
 
@@ -280,11 +302,13 @@ class Instrument:
         nphot : array-like or float
             Number of photons in the streak.
         length : float
-            Streak length in arcseconds.
+            Streak length in pixels.
         psf_fwhm : float
             PSF full width at half maximum in arcseconds.
         sky_phot : float
             Sky level in photons / arcsec^2 / sec.
+        exptime : float, optional
+            Exposure duration in seconds; defaults to one for compatibility.
 
         Returns
         -------
@@ -295,9 +319,12 @@ class Instrument:
         reff = np.sqrt(neff / np.pi)
 
         aeff = neff + reff * length
-        var = np.asarray(nphot) / self.gain
-        var += (sky_phot * self.pix_size**2 / self.gain + self.read_noise**2) * aeff
-        return np.asarray(nphot) / np.sqrt(var)
+        signal = np.asarray(nphot, dtype=float) * self.quantum_efficiency
+        var = signal + (
+            sky_phot * exptime * self.pix_size**2 * self.quantum_efficiency
+            + self.read_noise**2
+        ) * aeff
+        return np.divide(signal, np.sqrt(var), out=np.zeros_like(signal), where=var > 0)
 
 
 # Backward-compatible aliases

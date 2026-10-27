@@ -33,6 +33,7 @@ dependencies = [
   "astroquery",
   "lsst-sphgeom",
   "pyyaml",
+  "tqdm",
 ]
 
 [project.urls]

@@ -8,12 +8,49 @@ from abc import ABC, abstractmethod
 import astropy.units as u
 import lsst.sphgeom as sphgeom
 import numpy as np
+from astropy.coordinates import SkyCoord
 from astropy.table import Table, vstack
+from astropy.time import Time
 from ssapy.utils import catalog_to_apparent
 
 from .photometry import vega_to_ab_offset
 
 __all__ = ["StarCatalog", "MockStarCatalog", "GaiaStarCatalog"]
+
+
+def _column_to_unit(column, unit, default_unit=None):
+    """Return a table column as a floating-point array in ``unit``."""
+    column_unit = getattr(column, "unit", None)
+    mask = np.ma.getmaskarray(column)
+    if column_unit is None:
+        if default_unit is None:
+            raise ValueError(
+                f"Column without a unit requires an explicit {unit} unit."
+            )
+        values = np.asarray(np.ma.getdata(column), dtype=float)
+        converted = (values * default_unit).to_value(unit)
+    else:
+        values = np.asarray(np.ma.getdata(column.to(unit).value), dtype=float)
+        converted = values
+    return np.where(mask, np.nan, converted)
+
+
+def _histogram_sample(rng, values, bins, size):
+    """Sample uniformly within histogram intervals."""
+    values = np.asarray(values, dtype=float)
+    bins = np.asarray(bins, dtype=float)
+    if len(bins) != len(values) + 1:
+        raise ValueError("Histogram bins must contain one more edge than values.")
+    if (
+        len(values) == 0
+        or not np.all(np.isfinite(values))
+        or np.any(values < 0)
+        or not np.all(np.isfinite(bins))
+        or np.any(np.diff(bins) <= 0)
+    ):
+        raise ValueError("Histogram values and edges must define finite intervals.")
+    indices = rng.choice(len(values), p=values / np.sum(values), size=size)
+    return rng.uniform(bins[indices], bins[indices + 1])
 
 
 def _coord_to_uv3d(coord):
@@ -182,7 +219,7 @@ class MockStarCatalog(StarCatalog):
             24474, 25621, 26306, 27156, 28272, 28551, 29535, 30510, 31067,
             32346, 33013, 33201,
         ])
-        self.bins = np.linspace(10, 21, 111)
+        self.bins = np.linspace(10, 21, len(self.imag_hist) + 1)
         self.density = np.sum(self.imag_hist) / 0.102219849198379
 
     def _get_trixel_stars(self, idx, time):
@@ -233,12 +270,7 @@ class MockStarCatalog(StarCatalog):
         table["ra_rad"] = ra[w]
         table["dec_rad"] = dec[w]
 
-        indices = rng.choice(
-            len(self.imag_hist),
-            p=self.imag_hist / np.sum(self.imag_hist),
-            size=nstar,
-        )
-        i_mag = self.bins[indices] + rng.uniform(0, 0.1, size=nstar)
+        i_mag = _histogram_sample(rng, self.imag_hist, self.bins, nstar)
         table["i_mag"] = i_mag[w]
 
         if self.magnitude_hists is not None:
@@ -249,12 +281,7 @@ class MockStarCatalog(StarCatalog):
                 if len(mag_hist) == 0 or np.sum(mag_hist) == 0:
                     continue
 
-                indices = rng.choice(
-                    len(mag_hist),
-                    p=mag_hist / np.sum(mag_hist),
-                    size=nstar,
-                )
-                mag = bins[indices] + rng.uniform(0, 0.1, size=nstar)
+                mag = _histogram_sample(rng, mag_hist, bins, nstar)
                 table[f"{gaia_filter.lower()}_mag"] = mag[w] + vega_to_ab_offset(gaia_filter)
 
         table["ra"] = np.rad2deg(table["ra_rad"])
@@ -276,7 +303,20 @@ class GaiaStarCatalog(StarCatalog):
     Notes
     -----
     Expected input files should contain columns required for apparent-coordinate
-    conversion, including sky position, proper motion, parallax, and fluxes.
+    conversion, including sky position, proper motion, parallax, and
+    ``phot_g_mean_mag`` or a physically convertible
+    ``phot_g_mean_flux``. Returned magnitudes are AB: Gaia's Vega-system
+    G magnitude receives the existing ``G`` Vega-to-AB offset, while a
+    physical flux density is converted directly with Astropy. The returned
+    ``i_mag`` column is a documented Gaia-G-as-``i_mag`` approximation; it is
+    not a Sloan/LSST i-band transformation. Existing LSST trixel files may use
+    ``coord_ra``,
+    ``coord_dec``, ``pm_ra``, and ``pm_dec``. These legacy LSST columns are
+    interpreted as J2000 positions, matching ``catalog_to_apparent``.
+    Standard Gaia files may use ``ra``, ``dec``, ``pmra``, and ``pmdec``;
+    those files must also provide ``ref_epoch``. Standard Gaia positions are
+    rebased from ``ref_epoch`` to J2000 before calling
+    ``catalog_to_apparent``.
     """
 
     def __init__(self, gaia_dir, level=7):
@@ -302,21 +342,118 @@ class GaiaStarCatalog(StarCatalog):
         filename = os.path.join(self.gaia_dir, f"{idx}.fits")
         gaia_data = Table.read(filename)
 
-        valid = gaia_data["phot_g_mean_flux"] > 0.0
-        gaia_data = gaia_data[valid]
+        if "phot_g_mean_mag" in gaia_data.colnames:
+            g_mag = np.ma.asarray(
+                gaia_data["phot_g_mean_mag"], dtype=float
+            ).filled(np.nan)
+            # Gaia catalogue magnitudes are Vega magnitudes; the renderer
+            # consumes AB magnitudes.
+            g_mag += vega_to_ab_offset("G")
+        elif "phot_g_mean_flux" in gaia_data.colnames:
+            try:
+                g_mag = np.ma.asarray(
+                    gaia_data["phot_g_mean_flux"].to(u.ABmag).value,
+                    dtype=float,
+                ).filled(np.nan)
+                g_mag = np.where(
+                    np.ma.getmaskarray(gaia_data["phot_g_mean_flux"]), np.nan, g_mag,
+                )
+            except (TypeError, u.UnitConversionError) as exc:
+                raise ValueError(
+                    "phot_g_mean_flux must be a physical flux density "
+                    "convertible to ABmag; electron/s requires a "
+                    "release-specific zeropoint."
+                ) from exc
+        else:
+            raise ValueError(
+                "Gaia catalog must provide phot_g_mean_mag or a physical "
+                "phot_g_mean_flux."
+            )
+
+        if "coord_ra" in gaia_data.colnames:
+            standard = False
+            ra_name, dec_name = "coord_ra", "coord_dec"
+            pmra_name, pmdec_name = "pm_ra", "pm_dec"
+            coord_default = u.rad
+            pm_default = u.mas / u.yr
+            parallax_default = u.arcsec
+        else:
+            standard = True
+            if "ref_epoch" not in gaia_data.colnames:
+                raise ValueError(
+                    "Standard Gaia ra/dec columns require ref_epoch; "
+                    "raw Gaia positions must not be assumed to be J2000."
+                )
+            ra_name, dec_name = "ra", "dec"
+            pmra_name, pmdec_name = "pmra", "pmdec"
+            coord_default = u.deg
+            pm_default = u.mas / u.yr
+            parallax_default = u.mas
+
+        ra = _column_to_unit(gaia_data[ra_name], u.rad, coord_default)
+        dec = _column_to_unit(gaia_data[dec_name], u.rad, coord_default)
+        pmra = _column_to_unit(
+            gaia_data[pmra_name], u.mas / u.yr, pm_default
+        )
+        pmdec = _column_to_unit(
+            gaia_data[pmdec_name], u.mas / u.yr, pm_default
+        )
+        parallax = _column_to_unit(
+            gaia_data["parallax"], u.arcsec, parallax_default
+        )
+        if standard:
+            ref_epoch = _column_to_unit(
+                gaia_data["ref_epoch"], u.yr, u.yr
+            )
+        else:
+            ref_epoch = None
+        valid = np.ones(len(ra), dtype=bool)
+        for values in (ra, dec, pmra, pmdec, parallax, g_mag):
+            valid &= np.isfinite(values)
+        if ref_epoch is not None:
+            valid &= np.isfinite(ref_epoch)
+
+        if not np.any(valid):
+            return Table(
+                {
+                    "ra_rad": np.array([], dtype=float),
+                    "dec_rad": np.array([], dtype=float),
+                    "i_mag": np.array([], dtype=float),
+                    "ra": np.array([], dtype=float),
+                    "dec": np.array([], dtype=float),
+                }
+            )
+
+        if standard:
+            j2000 = SkyCoord(
+                ra=ra[valid] * u.rad,
+                dec=dec[valid] * u.rad,
+                pm_ra_cosdec=pmra[valid] * u.mas / u.yr,
+                pm_dec=pmdec[valid] * u.mas / u.yr,
+                obstime=Time(ref_epoch[valid], format="jyear"),
+            ).apply_space_motion(new_obstime=Time("J2000"))
+            ra = j2000.ra.to_value(u.rad)
+            dec = j2000.dec.to_value(u.rad)
+            pmra = j2000.pm_ra_cosdec.to_value(u.mas / u.yr)
+            pmdec = j2000.pm_dec.to_value(u.mas / u.yr)
+        else:
+            ra = ra[valid]
+            dec = dec[valid]
+            pmra = pmra[valid]
+            pmdec = pmdec[valid]
 
         table = Table()
         table["ra_rad"], table["dec_rad"] = catalog_to_apparent(
-            gaia_data["coord_ra"].to(u.rad).value,
-            gaia_data["coord_dec"].to(u.rad).value,
+            ra,
+            dec,
             time,
             observer=None,
-            pmra=gaia_data["pm_ra"].to(u.mas).value,
-            pmdec=gaia_data["pm_dec"].to(u.mas).value,
-            parallax=gaia_data["parallax"].to(u.arcsec).value,
+            pmra=pmra,
+            pmdec=pmdec,
+            parallax=parallax[valid],
         )
 
-        table["i_mag"] = gaia_data["phot_g_mean_flux"].to(u.ABmag).value
+        table["i_mag"] = g_mag[valid]
         table["ra"] = np.rad2deg(table["ra_rad"])
         table["dec"] = np.rad2deg(table["dec_rad"])
         return table

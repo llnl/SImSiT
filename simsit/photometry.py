@@ -10,7 +10,6 @@ https://gea.esac.esa.int/archive/documentation/GDR2/Data_processing/chap_cu5pho/
 
 import astropy.units as u
 import numpy as np
-from astroquery.gaia import Gaia
 from astropy.coordinates import SkyCoord
 
 
@@ -101,6 +100,8 @@ def get_gaia_sources(ra_deg, dec_deg, radius_deg, gaia_data_release=3, star_lim=
     This function performs a remote query through ``astroquery.gaia`` and
     therefore requires network access.
     """
+    from astroquery.gaia import Gaia
+
     Gaia.ROW_LIMIT = star_lim
     Gaia.MAIN_GAIA_TABLE = f"gaiadr{gaia_data_release}.gaia_source"
 
@@ -156,8 +157,10 @@ def get_gaia_magnitude_histogram(
     results = {}
 
     for filt in gaia_filters:
-        magnitude_dist = catalog[f"phot_{filt}_mean_mag"].data
-        magnitude_dist = magnitude_dist[~np.isnan(magnitude_dist)]
+        magnitude_dist = np.ma.asarray(
+            catalog[f"phot_{filt}_mean_mag"], dtype=float
+        ).filled(np.nan)
+        magnitude_dist = magnitude_dist[np.isfinite(magnitude_dist)]
 
         if len(magnitude_dist) == 0:
             results[filt.upper()] = {
@@ -168,7 +171,10 @@ def get_gaia_magnitude_histogram(
 
         min_mag = np.min(magnitude_dist)
         max_mag = np.max(magnitude_dist)
-        bins = np.linspace(min_mag, max_mag, num=nbins)
+        if min_mag == max_mag:
+            min_mag -= 0.5
+            max_mag += 0.5
+        bins = np.linspace(min_mag, max_mag, num=nbins + 1)
         values, _ = np.histogram(magnitude_dist, bins=bins)
 
         results[filt.upper()] = {
