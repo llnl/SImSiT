@@ -93,6 +93,38 @@ Truth magnitudes now use `mag`, not the misleading `i_mag` field. FITS
 products record `FILTER`, `RESPHASH`, `BANDREF` and `ZPREF` alongside the
 photon/electron/ADU contract.
 
+## Satellite Photometry
+
+Every configuration selects `photometry.model`: `constant`, `lambertian`,
+or `faceted`. `constant` retains synthetic AB magnitudes, including the
+`mag_range: null` empty-target option. Physical models require explicit
+SSATK parameters:
+
+```yaml
+sat:
+  mag_range: null
+photometry:
+  model: lambertian
+  params:
+    radius_m: 1.0
+    albedo: 0.2
+    include_earthshine: false
+    include_moonshine: false
+```
+
+Physical rates use generated-orbit GCRF states at each arrival epoch and fold
+the public SSATK gray Lambertian/faceted model through the configured response.
+Fixed exposure segments use Simpson integration of cached scalar rates. Truth
+stores integrated incident-photon `nphot` and exposure-mean `mean_ab_mag`;
+detector QE and gain are applied only during rendering.
+
+SSATK radiometry assumes gray Lambertian reflection and blackbody source
+spectra. It is not a calibrated spacecraft spectrum, specular-glint model, or
+relativistic flux model. Apparent observation mode changes direction through
+SSATK light-time and aberration handling; radiometry remains the geometric
+model evaluated at the explicit arrival state. Facet geometry, attitude, and
+material coefficients are caller supplied.
+
 ## Validation
 
 Run the offline reference and end-to-end tests with
