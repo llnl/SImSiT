@@ -45,8 +45,8 @@ WCS, or detector rendering. Python 3.10 or newer is required.
   iterative light-time and observer-velocity aberration for both tracking
   and rendering. `FRAME` and `OBSMODE` are recorded in FITS headers.
   Gaia stars use geocentric apparent-coordinate approximations.
-  The legacy `i_mag` catalog field is AB Gaia G as an i-band proxy, not a
-  calibrated i-band color transformation.
+  Catalog `mag` values identify their actual passband and magnitude system;
+  raw Gaia G is never substituted for i or another response.
 - Magnitudes and surface brightness passed to the renderer are AB values in
   the same passband as the supplied zeropoint. The zeropoint is the magnitude
   producing one incident photon/second before vignetting. Random satellite
@@ -63,6 +63,35 @@ WCS, or detector rendering. Python 3.10 or newer is required.
   are NaN in FITS truth and null in YAML.
 - A configuration seed reproduces the simulation under the same dependency
   versions. Cadence returns only exposures contained in the usable pass.
+
+## Calibrated Passbands
+
+Simulation requires `instrument.passband` with a name, positive increasing
+`wavelength_nm` samples, throughput fractions, and a calibration `reference`.
+Curves are supplied by the caller; the example top-hats are explicitly
+synthetic, not measured instrument calibrations.
+
+The photon-weighted AB convention uses the exact -48.60 zero point, matching
+Astropy's `ABmag`. `simsit.photometry.spectrum_to_magnitude` folds a
+unit-bearing sampled spectrum through the response without extrapolation.
+`Instrument.photon_rate` and `spectral_photon_rate` use that same response
+and unobscured collecting area. An empirical photon zeropoint additionally
+requires `zeropoint_reference`; it acts as bounded achromatic transmission.
+Quantum efficiency and gain are applied later, exactly once.
+
+With real catalogs, set `catalog.magnitude_column` to a matching AB magnitude
+column, or select a physical band-mean flux density with
+`magnitude_system: flux_density`. Input FITS metadata must contain
+`PASSBAND`, the exact `RESPHASH`, `MAGSYS: AB`, and `MAGCOL`.
+`synthetic_photometry` copies a supplied spectral catalog, adds a new AB
+column and these tags without altering native measurements.
+Single Gaia G measurements cannot determine other-band fluxes without
+additional calibrated data. Native Gaia queries retain their actual Vega/AB
+system and are not automatically eligible for rendering.
+
+Truth magnitudes now use `mag`, not the misleading `i_mag` field. FITS
+products record `FILTER`, `RESPHASH`, `BANDREF` and `ZPREF` alongside the
+photon/electron/ADU contract.
 
 ## Validation
 

@@ -43,6 +43,18 @@ def test_vega_to_ab_offset():
         )
 
 
+def test_sdss_i_relation_and_published_color_domain():
+    # Evans et al. (2018) Table A.2 gives G-i, not i-G.
+    color = 2.0
+    expected = 15.0 - (-0.29676 + 0.64728 * color - 0.10141 * color**2)
+    np.testing.assert_allclose(
+        convert_gaia_magnitude(15, 16, 14, "SDSS12_i"), expected, atol=1e-12, rtol=0,
+    )
+    for color in (0.0, 4.5, np.nan):
+        with pytest.raises(ValueError, match="BP-RP"):
+            convert_gaia_magnitude(15, 14 + color, 14, "SDSS12_i")
+
+
 def test_gaia_magnitude_histogram_has_edges_and_finite_filter(monkeypatch):
     catalog = Table(
         {

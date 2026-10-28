@@ -10,6 +10,7 @@ API
    simsit.catalog
    simsit.instrument
    simsit.photometry
+   simsit.passband
    simsit.simulate
    simsit.tools
    simsit.tracker

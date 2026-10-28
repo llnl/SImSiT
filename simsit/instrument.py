@@ -6,6 +6,11 @@ import galsim
 import numpy as np
 
 from .wcs import radial_wcs
+from .passband import Passband as _Passband
+from .passband import ab_magnitude_to_photon_rate as _ab_photon_rate
+from .passband import photon_rate as _spectral_photon_rate
+from .passband import calibration_reference as _calibration_reference
+import astropy.units as u
 
 
 class Instrument:
@@ -22,6 +27,14 @@ class Instrument:
         Read noise in electrons.
     quantum_efficiency : float, optional
         Detected electrons per incident photon, greater than zero and at most one.
+    passband : simsit.passband.Passband or dict, optional
+        Named optical response with calibration provenance. Required for
+        magnitude/spectrum photon conversion and the simulation pipeline.
+    zeropoint : float, optional
+        Empirical photon zeropoint, represented as additional achromatic
+        transmission bounded so total throughput cannot exceed one.
+    zeropoint_reference : str, optional
+        Required calibration reference when an empirical zeropoint is supplied.
     pixel_scale : float
         Physical pixel size in microns.
     aperture : float
@@ -52,6 +65,9 @@ class Instrument:
         distortion=None,
         vignetting=None,
         quantum_efficiency=1.0,
+        passband=None,
+        zeropoint=None,
+        zeropoint_reference=None,
     ):
         if (len(image_shape) != 2
                 or any(not isinstance(n, (int, np.integer)) or n <= 0 for n in image_shape)):
@@ -71,6 +87,23 @@ class Instrument:
         self.distortion = distortion
         self.vignetting = vignetting
         self.quantum_efficiency = quantum_efficiency
+        if not np.isfinite(aperture) or aperture <= 0 or not np.isfinite(obscuration) or not 0 <= obscuration < 1:
+            raise ValueError("aperture must be positive and obscuration must be in [0, 1).")
+        self.passband = _Passband.from_config(passband) if isinstance(passband, dict) else passband
+        if self.passband is not None and not isinstance(self.passband, _Passband):
+            raise TypeError("passband must be a Passband or response configuration.")
+        if zeropoint is not None and self.passband is None:
+            raise ValueError("A supplied photon zeropoint requires a passband response and calibration reference.")
+        self.zeropoint_reference = zeropoint_reference
+        if zeropoint_reference is not None:
+            _calibration_reference(zeropoint_reference)
+        self.calibration_scale = 1.0
+        if self.passband is not None and zeropoint is not None:
+            if not np.isfinite(zeropoint) or not isinstance(zeropoint_reference, str) or not zeropoint_reference.strip():
+                raise ValueError("A supplied photon zeropoint requires a finite value and calibration reference.")
+            rate0 = _ab_photon_rate(0, self.passband, self.collecting_area).to_value(1 / u.s)
+            self.calibration_scale = 10 ** (0.4 * zeropoint) / rate0
+            self.photon_scale(0)
 
         if vignetting is not None:
             from scipy.interpolate import PchipInterpolator
@@ -111,7 +144,42 @@ class Instrument:
             distortion=config.get("distortion"),
             vignetting=config.get("vignetting"),
             quantum_efficiency=config.get("quantum_efficiency", 1.0),
+            passband=config.get("passband"),
+            zeropoint=config.get("zeropoint"),
+            zeropoint_reference=config.get("zeropoint_reference"),
         )
+
+    @property
+    def collecting_area(self):
+        """Unobscured collecting area in square meters."""
+        return np.pi * (self.aperture / 2)**2 * (1 - self.obscuration**2)
+
+    def photon_scale(self, zeropoint_offset=0.0):
+        """Additional achromatic transmission, bounded by physical throughput."""
+        if self.passband is None:
+            raise ValueError("Photon conversion requires an explicit passband response.")
+        if np.ndim(zeropoint_offset) or not np.isfinite(zeropoint_offset):
+            raise ValueError("Zeropoint offset must be finite.")
+        scale = self.calibration_scale * 10 ** (0.4 * zeropoint_offset)
+        if not np.isfinite(scale) or scale <= 0 or scale * np.max(self.passband.throughput) > 1 + 1e-12:
+            raise ValueError("Photon calibration would exceed physical throughput or produce zero flux.")
+        return scale
+
+    @property
+    def photon_zeropoint(self):
+        """Passband AB magnitude producing one incident photon/sec before vignetting."""
+        rate0 = self.photon_rate(0).to_value(1 / u.s)
+        return 2.5 * np.log10(rate0)
+
+    def photon_rate(self, magnitude, *, zeropoint_offset=0.0):
+        """Incident photon rate for matching photon-weighted band AB magnitudes."""
+        scale = self.photon_scale(zeropoint_offset)
+        return _ab_photon_rate(magnitude, self.passband, self.collecting_area) * scale
+
+    def spectral_photon_rate(self, wavelength, flux_lambda, *, zeropoint_offset=0.0):
+        """Incident photons from a physical spectrum, with the same calibration."""
+        scale = self.photon_scale(zeropoint_offset)
+        return _spectral_photon_rate(wavelength, flux_lambda, self.passband, self.collecting_area) * scale
 
     def init_image(self, *, sky_phot, exptime):
         """
