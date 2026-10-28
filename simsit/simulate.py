@@ -72,6 +72,13 @@ def make_image(config, rng, parameters):
             f"SSATK gray {photometry['model']} geometric radiometry at arrival epoch; "
             "apparent mode only changes direction/light-time"
         )
+    integration_config = config.get("integration")
+    if integration_config is False:
+        integration_metadata = {}
+        integration_mode = "fixed"
+    else:
+        integration_metadata = dict(integration_config or {})
+        integration_mode = "adaptive"
 
     if instrument.passband is None:
         raise ValueError("Image generation requires an explicit named passband response.")
@@ -192,6 +199,7 @@ def make_image(config, rng, parameters):
         tracker=tracker,
         psf=psf,
         image=image,
+        integration=config.get("integration"),
     )
     sats, wcst = simsit.tools.draw_sat(
         orbits,
@@ -207,6 +215,7 @@ def make_image(config, rng, parameters):
         observation_mode=observation_mode,
         rate_functions=rate_functions,
         ab_magnitude_functions=ab_magnitude_functions,
+        integration=config.get("integration"),
     )
 
     if wcst is None:
@@ -323,6 +332,10 @@ def make_image(config, rng, parameters):
             or "Derived from response and collecting area"
         )
         header["PHOTO"] = photo_description
+        header["INTMODE"] = integration_mode
+        if integration_mode == "adaptive":
+            header["PIXTOL"] = integration_metadata.get("pixel_tolerance", 0.01)
+            header["FLXTOL"] = integration_metadata.get("flux_relative_tolerance", 1e-4)
     hdu.header["BUNIT"] = "ADU"
     hdu_true_wcs_start.header["MAGZP"] = adu_zp
     hdu_true_wcs_end.header["MAGZP"] = adu_zp

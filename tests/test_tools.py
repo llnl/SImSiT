@@ -41,11 +41,12 @@ def test_deterministic_expected_star_flux():
     )
     center = galsim.CelestialCoord(0 * galsim.degrees, 0 * galsim.degrees)
     wcs = detector.get_wcs(center, 0 * galsim.degrees)
+    stars = Table({"ra": [0.0], "dec": [0.0], "nphot": [1000.0]})
     images = []
     for _ in range(2):
         image = detector.init_image(sky_phot=0, exptime=1)
         draw_stars(
-            Table({"ra": [0.0], "dec": [0.0], "nphot": [1000.0]}),
+            stars,
             t0=Time("2020-01-01"), exptime=1, wcs0=wcs,
             tracker=SiderealTracker(center, 0 * galsim.degrees),
             psf=galsim.Gaussian(sigma=1), image=image,
@@ -53,6 +54,18 @@ def test_deterministic_expected_star_flux():
         images.append(image.array.copy())
     np.testing.assert_array_equal(images[0], images[1])
     np.testing.assert_allclose(images[0].sum(), 1000, rtol=1e-4)
+    assert stars["integration_samples"][0] >= 5
+    assert stars["estimated_flux_error"][0] == 0
+
+    empty = Table({"ra": [], "dec": [], "nphot": []})
+    draw_stars(
+        empty,
+        t0=Time("2020-01-01"), exptime=1, wcs0=wcs,
+        tracker=SiderealTracker(center, 0 * galsim.degrees),
+        psf=galsim.Gaussian(sigma=1), image=detector.init_image(sky_phot=0, exptime=1),
+    )
+    assert len(empty["integration_samples"]) == 0
+    assert len(empty["estimated_flux_error"]) == 0
 
 
 def test_line_orientation_against_endpoint_geometry():
