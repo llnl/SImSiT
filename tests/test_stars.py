@@ -66,7 +66,7 @@ def test_gaia_catalog_supports_lsst_and_standard_units(monkeypatch):
         captured.update(kwargs)
         return np.asarray(ra), np.asarray(dec)
 
-    monkeypatch.setattr("simsit.catalog.ssatk.ssapy.utils.catalog_to_apparent", apparent)
+    monkeypatch.setattr("simsit.catalog.backend.catalog_to_apparent", apparent)
 
     lsst = Table(
         {
