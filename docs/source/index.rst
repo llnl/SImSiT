@@ -42,6 +42,7 @@ Contents
    developer
    changelog
    references
+   scientific_validation
    api
 
 Indices and tables
