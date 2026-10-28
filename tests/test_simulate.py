@@ -59,7 +59,10 @@ def test_seeded_simulation_and_fits_truth(tmp_path, monkeypatch, tracking, n_sat
         },
         "conditions": {"psf_fwhm_range": [2, 2], "sky_range": [18, 18], "zp_range": [0, 0]},
         "cadence": {"exptime": [0.1]}, "sites": ["test"],
-        "sat": {"mag_range": magnitudes},
+        "sat": {
+            "mag_range": magnitudes,
+        },
+        "photometry": {"model": "constant"},
         "tracker": {
             "type": tracking, "rot_sky_pos0": 17,
             "error": {"t_rewind": 1, "v_perturb": 0, "boresight": 0},

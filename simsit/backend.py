@@ -13,6 +13,7 @@ __all__ = [
     "as_time", "observation_mode", "orbit_from_state", "keplerian_propagator",
     "states", "sky_coordinates", "observer_from_location", "observer_location",
     "catalog_to_apparent", "find_passes", "refine_pass",
+    "lambertian_reflection", "thermal_emission", "faceted_reflection", "facets_from_config",
 ]
 
 
@@ -150,6 +151,80 @@ def find_passes(orbit, observers, time, duration, step, **kwargs):
 
 def refine_pass(orbit, observer, time, **kwargs):
     return ssatk.ssapy.compute.refine_pass(orbit, observer, as_time(time), **kwargs)
+
+
+def _physical_position(position_gcrf_m):
+    """Validate and normalize one explicit physical GCRF position."""
+    position = _values(position_gcrf_m, u.m)
+    if position.shape != (3,):
+        raise ValueError("Physical model position must be one GCRF vector in meters.")
+    return position
+
+
+def _physical_observer(observer, time=None):
+    """Validate an observer accepted by SSATK's physical models."""
+    if isinstance(observer, EarthLocation):
+        if not observer.isscalar:
+            raise TypeError("A physical model observer must be scalar.")
+        _values(observer.itrs.cartesian.xyz, u.m)
+        return observer
+    if isinstance(observer, ssatk.EarthObserver):
+        return observer
+    if hasattr(observer, "getRV"):
+        if time is None:
+            raise ValueError("Resolving an orbital observer requires an explicit epoch.")
+        observer, _ = observer.getRV(as_time(time))
+    position = _values(observer, u.m)
+    if position.shape != (3,):
+        raise ValueError("A physical model observer must be a GCRF vector in meters.")
+    return position
+
+
+def lambertian_reflection(position_gcrf_m, time, observer, **kwargs):
+    """Call SSATK's released Lambertian reflection model at an explicit state."""
+    from ssatk.compute.lambertian_magnitude import lambertian_reflection as model
+
+    return model(
+        _physical_position(position_gcrf_m),
+        observer=_physical_observer(observer, time),
+        time=as_time(time),
+        **kwargs,
+    )
+
+
+def thermal_emission(position_gcrf_m, time, observer, **kwargs):
+    """Call SSATK's released gray-body thermal model at an explicit state."""
+    from ssatk.compute.lambertian_magnitude import thermal_emission as model
+
+    return model(
+        _physical_position(position_gcrf_m),
+        observer=_physical_observer(observer, time),
+        time=as_time(time),
+        **kwargs,
+    )
+
+
+def faceted_reflection(position_gcrf_m, time, observer, *, quaternion, facets, **kwargs):
+    """Call SSATK's released faceted reflection model at an explicit state."""
+    from ssatk.compute.faceted_magnitude import faceted_reflection as model
+
+    if np.asarray(quaternion).shape != (4,):
+        raise ValueError("Physical model quaternion must be one [w, x, y, z] vector.")
+    if not np.isfinite(np.asarray(quaternion, dtype=float)).all():
+        raise ValueError("Physical model quaternion must be finite.")
+    return model(
+        _physical_position(position_gcrf_m),
+        quaternion=np.asarray(quaternion, dtype=float),
+        facets=tuple(facets),
+        observer=_physical_observer(observer, time),
+        time=as_time(time),
+        **kwargs,
+    )
+
+
+def facets_from_config(facets):
+    """Construct explicit SSATK facets; no mesh or optical properties are inferred."""
+    return tuple(facet if isinstance(facet, ssatk.Facet) else ssatk.Facet(**facet) for facet in facets)
 
 
 def normed(vector):
