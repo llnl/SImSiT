@@ -16,8 +16,17 @@ from simsit.simulate import simulate
 
 
 class SmallCatalog:
+    def __init__(self, passband):
+        self.passband = passband
+
     def get_stars(self, start, end, radius, time):
-        return Table({"ra": [start.ra.deg], "dec": [start.dec.deg], "i_mag": [18.0]})
+        return Table(
+            {"ra": [start.ra.deg], "dec": [start.dec.deg], "mag": [18.0]},
+            meta={
+                "PASSBAND": self.passband.name, "RESPHASH": self.passband.response_hash,
+                "MAGSYS": "AB", "MAGCOL": "mag",
+            },
+        )
 
 
 @pytest.mark.parametrize("tracking,n_sat,magnitudes,mode", [
@@ -42,6 +51,11 @@ def test_seeded_simulation_and_fits_truth(tmp_path, monkeypatch, tracking, n_sat
             "quantum_efficiency": 0.8, "pixel_scale": 1, "aperture": 1,
             "distortion": {"th": [0, 1], "dthdr": [1, 1]},
             "zeropoint": 20,
+            "zeropoint_reference": "Synthetic low-throughput test calibration",
+            "passband": {
+                "name": "test_optical", "wavelength_nm": [400, 800],
+                "throughput": [1, 1], "reference": "Synthetic analytic test top-hat",
+            },
         },
         "conditions": {"psf_fwhm_range": [2, 2], "sky_range": [18, 18], "zp_range": [0, 0]},
         "cadence": {"exptime": [0.1]}, "sites": ["test"],
@@ -66,6 +80,7 @@ def test_seeded_simulation_and_fits_truth(tmp_path, monkeypatch, tracking, n_sat
         assert hdus[0].header["GAIN"] == 2
         assert hdus[0].header["FRAME"] == "GCRF"
         assert hdus[0].header["OBSMODE"] == mode
+        assert hdus[0].header["FILTER"] == "test_optical"
         assert np.isfinite(hdus[0].data).all()
     with open(first / "images/sample_metadata_1.yaml") as stream:
         example = list(yaml.safe_load_all(stream))

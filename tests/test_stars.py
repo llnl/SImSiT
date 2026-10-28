@@ -94,7 +94,9 @@ def test_gaia_catalog_supports_lsst_and_standard_units(monkeypatch):
     lsst_result = simsit.GaiaStarCatalog("/tmp")._get_trixel_stars(
         1, Time("J2000")
     )
-    assert np.isclose(lsst_result["i_mag"][0], 15.105)
+    assert np.isclose(lsst_result["mag"][0], 15.0)
+    assert lsst_result.meta["PASSBAND"] == "Gaia_G"
+    assert lsst_result.meta["MAGSYS"] == "Vega"
     assert np.isclose(captured["parallax"][0], 0.1)
 
     monkeypatch.setattr("simsit.catalog.Table.read", lambda _: standard)
@@ -162,7 +164,7 @@ def test_gaia_catalog_accepts_physical_flux_density(monkeypatch):
         1, Time("J2000")
     )
 
-    assert np.isclose(result["i_mag"][0], 31.4)
+    assert np.isclose(result["mag"][0], 31.4)
 
 
 def test_gaia_catalog_preserves_flux_density_mask(monkeypatch):
@@ -179,7 +181,7 @@ def test_gaia_catalog_preserves_flux_density_mask(monkeypatch):
     monkeypatch.setattr("simsit.catalog.Table.read", lambda _: data)
     result = simsit.GaiaStarCatalog("/tmp")._get_trixel_stars(1, Time("J2000"))
     assert len(result) == 1
-    np.testing.assert_allclose(result["i_mag"], [31.4], atol=1e-10, rtol=0)
+    np.testing.assert_allclose(result["mag"], [31.4], atol=1e-10, rtol=0)
 
 
 def test_gaia_catalog_rejects_electron_rate_flux(monkeypatch):
@@ -235,4 +237,4 @@ def test_gaia_catalog_masks_invalid_rows_and_preserves_empty_shape(monkeypatch):
     )
 
     assert len(result) == 0
-    assert result.colnames == ["ra_rad", "dec_rad", "i_mag", "ra", "dec"]
+    assert result.colnames == ["ra_rad", "dec_rad", "mag", "ra", "dec"]

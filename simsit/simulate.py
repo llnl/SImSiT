@@ -58,7 +58,10 @@ def make_image(config, rng, parameters):
     propagator = parameters["propagator"]
     observation_mode = backend.observation_mode(parameters.get("observation_mode", "geometric"))
 
-    sky_phot = 10 ** (-0.4 * (sky_sb - zp))
+    if instrument.passband is None:
+        raise ValueError("Image generation requires an explicit named passband response.")
+    zp_offset = zp - instrument.photon_zeropoint
+    sky_phot = instrument.photon_rate(sky_sb, zeropoint_offset=zp_offset).to_value(1 / u.s)
     psf = galsim.Kolmogorov(
         fwhm=psf_fwhm,
         gsparams=galsim.GSParams(folding_threshold=1e-3),
@@ -78,9 +81,14 @@ def make_image(config, rng, parameters):
         print(f"{orbit.i = } rad")
 
     if config["catalog"].get("develop", False):
-        catalog = simsit.MockStarCatalog()
+        catalog = simsit.MockStarCatalog(passband=instrument.passband)
     else:
-        catalog = simsit.GaiaStarCatalog(config["catalog"]["gaia_dir"])
+        catalog_config = config["catalog"]
+        catalog = simsit.GaiaStarCatalog(
+            catalog_config["gaia_dir"], passband=instrument.passband,
+            magnitude_column=catalog_config.get("magnitude_column"),
+            magnitude_system=catalog_config.get("magnitude_system", "AB"),
+        )
 
     cushion = 0.05 * galsim.degrees
     radius = instrument.field_radius + cushion
@@ -88,7 +96,16 @@ def make_image(config, rng, parameters):
     p1 = tracker.get_boresight(t0 + exptime * u.s)
 
     stars = catalog.get_stars(p0, p1, radius, t0)
-    stars["nphot"] = 10 ** (-0.4 * (stars["i_mag"] - zp)) * exptime
+    if (
+        stars.meta.get("PASSBAND") != instrument.passband.name
+        or stars.meta.get("RESPHASH") != instrument.passband.response_hash
+        or stars.meta.get("MAGSYS") != "AB"
+        or stars.meta.get("MAGCOL") != "mag"
+    ):
+        raise ValueError("Star magnitudes must be AB and calibrated in the instrument response.")
+    stars["nphot"] = instrument.photon_rate(
+        np.asarray(stars["mag"]), zeropoint_offset=zp_offset,
+    ).to_value(1 / u.s) * exptime
 
     length = p0.distanceTo(p1) / galsim.arcsec / instrument.pix_size
     stars["SNR"] = instrument.streak_snr(
@@ -104,7 +121,9 @@ def make_image(config, rng, parameters):
     sat_nphots = []
     for sat_mag in sat_mags:
         if sat_mag is not None:
-            sat_nphots.append(10 ** (-0.4 * (sat_mag - zp)) * exptime)
+            sat_nphots.append(
+                float(instrument.photon_rate(sat_mag, zeropoint_offset=zp_offset).to_value(1 / u.s)) * exptime
+            )
         else:
             sat_nphots.append(0.0)
 
@@ -137,12 +156,12 @@ def make_image(config, rng, parameters):
 
     if wcst is None:
         wcst = _transform_wcs(wcs0, p1, tracker.get_rot_sky_pos(t0 + exptime * u.s))
-    sats["i_mag"] = [np.nan if mag is None else mag for mag in sat_mags]
+    sats["mag"] = [np.nan if mag is None else mag for mag in sat_mags]
     instrument.apply_vignetting(image)
     instrument.apply_noise(image, sky_phot, rng)
 
     sample_star_dicts = []
-    star_indices = np.argsort(stars["i_mag"])
+    star_indices = np.argsort(stars["mag"])
 
     sigma_pix = 5.0
     sigma_sky_deg = 5.0 / 3600.0
@@ -157,7 +176,7 @@ def make_image(config, rng, parameters):
                 "flux": float(star["nphot"] * rng.uniform(1.0, 1.1)),
                 "ra": float((star["ra"] + rng.uniform(0, sigma_sky_deg)) % 360.0),
                 "dec": float(star["dec"] + rng.uniform(0, sigma_sky_deg)),
-                "mag": float(star["i_mag"] + rng.uniform(0, sigma_mag)),
+                "mag": float(star["mag"] + rng.uniform(0, sigma_mag)),
             }
         )
 
@@ -174,7 +193,7 @@ def make_image(config, rng, parameters):
                 "dec0": float(sat["dec0"] + rng.uniform(0, sigma_sky_deg)),
                 "ra1": float((sat["ra1"] + rng.uniform(0, sigma_sky_deg)) % 360.0),
                 "dec1": float(sat["dec1"] + rng.uniform(0, sigma_sky_deg)),
-                "mag": None if np.isnan(sat["i_mag"]) else float(sat["i_mag"]),
+                "mag": None if np.isnan(sat["mag"]) else float(sat["mag"]),
             }
         )
 
@@ -233,6 +252,10 @@ def make_image(config, rng, parameters):
         header["MAGSYS"] = "AB"
         header["FRAME"] = "GCRF"
         header["OBSMODE"] = observation_mode
+        header["FILTER"] = instrument.passband.name
+        header["RESPHASH"] = instrument.passband.response_hash
+        header["BANDREF"] = instrument.passband.reference
+        header["ZPREF"] = instrument.zeropoint_reference or "Derived from response and collecting area"
     hdu.header["BUNIT"] = "ADU"
     hdu_true_wcs_start.header["MAGZP"] = adu_zp
     hdu_true_wcs_end.header["MAGZP"] = adu_zp
@@ -283,12 +306,13 @@ def simulate(config):
     """
     image_dir = config.get("image_dir", "images")
     reference_dir = config.get("reference_dir", "reference")
+    instrument = simsit.Instrument.from_config(config["instrument"])
+    if instrument.passband is None:
+        raise ValueError("Simulation requires an explicit named passband response.")
 
     for d in [image_dir, reference_dir]:
         path = os.path.join(config["outdir"], d)
         os.makedirs(path, exist_ok=True)
-
-    instrument = simsit.Instrument.from_config(config["instrument"])
 
     sample_metadata = []
     example_metadata = []
@@ -315,10 +339,8 @@ def simulate(config):
             sky_sb = rng.uniform(*cond_cfg["sky_range"])
             zp_offset = rng.uniform(*cond_cfg["zp_range"])
 
-            if "zeropoint" in config["instrument"]:
-                zp = config["instrument"]["zeropoint"] + zp_offset
-            else:
-                zp = instrument.compute_lsst_scaled_zp() + zp_offset
+            instrument.photon_scale(zp_offset)
+            zp = instrument.photon_zeropoint + zp_offset
 
             print()
             print(f"{exptime = :.2f} s")

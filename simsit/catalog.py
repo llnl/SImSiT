@@ -14,6 +14,7 @@ from astropy.time import Time
 from . import backend
 
 from .photometry import vega_to_ab_offset
+from .passband import Passband as _Passband
 
 __all__ = ["StarCatalog", "MockStarCatalog", "GaiaStarCatalog"]
 
@@ -113,6 +114,7 @@ class StarCatalog(ABC):
     def __init__(self, level=7):
         self.level = level
         self.htm = sphgeom.HtmPixelization(level)
+        self.passband = None
 
     def get_stars(self, coord0, coord1, radius, time):
         """
@@ -134,7 +136,7 @@ class StarCatalog(ABC):
 
             - ``ra`` in degrees
             - ``dec`` in degrees
-            - ``i_mag``
+            - ``mag``, with ``PASSBAND`` and ``MAGSYS`` metadata
         """
         c0 = sphgeom.Circle(
             _coord_to_uv3d(coord0),
@@ -157,9 +159,18 @@ class StarCatalog(ABC):
                 table_list.append(self._get_trixel_stars(idx, time))
 
         if not table_list:
-            return Table()
+            metadata = {"PASSBAND": "unknown", "MAGSYS": "unknown"}
+            if self.passband is not None:
+                metadata = {
+                    "PASSBAND": self.passband.name,
+                    "RESPHASH": self.passband.response_hash, "MAGSYS": "AB", "MAGCOL": "mag",
+                }
+            return Table(
+                {name: np.empty(0) for name in ("ra_rad", "dec_rad", "mag", "ra", "dec")},
+                meta=metadata,
+            )
 
-        out = vstack(table_list)
+        out = vstack(table_list, metadata_conflicts="error")
         w = poly.contains(out["ra_rad"], out["dec_rad"])
         return out[w]
 
@@ -198,13 +209,14 @@ class MockStarCatalog(StarCatalog):
         Random seed controlling deterministic generation.
     magnitude_hists : dict, optional
         Precomputed magnitude histograms keyed by filter name. If omitted,
-        only ``i_mag`` is generated from the internal histogram.
+        only ``mag`` is generated from the internal synthetic histogram.
     """
 
-    def __init__(self, level=7, seed=123, magnitude_hists=None):
+    def __init__(self, level=7, seed=123, magnitude_hists=None, passband=None):
         super().__init__(level=level)
         self.seed = seed
         self.magnitude_hists = magnitude_hists
+        self.passband = passband
 
         self.imag_hist = np.array([
             129, 168, 180, 170, 191, 213, 233, 261, 249, 300, 338, 350, 393,
@@ -271,7 +283,7 @@ class MockStarCatalog(StarCatalog):
         table["dec_rad"] = dec[w]
 
         i_mag = _histogram_sample(rng, self.imag_hist, self.bins, nstar)
-        table["i_mag"] = i_mag[w]
+        table["mag"] = i_mag[w]
 
         if self.magnitude_hists is not None:
             for gaia_filter, hist in self.magnitude_hists.items():
@@ -286,6 +298,11 @@ class MockStarCatalog(StarCatalog):
 
         table["ra"] = np.rad2deg(table["ra_rad"])
         table["dec"] = np.rad2deg(table["dec_rad"])
+        table.meta["PASSBAND"] = self.passband.name if self.passband is not None else "synthetic_i"
+        table.meta["MAGSYS"] = "AB"
+        table.meta["MAGCOL"] = "mag"
+        if self.passband is not None:
+            table.meta["RESPHASH"] = self.passband.response_hash
         return table
 
 
@@ -302,14 +319,19 @@ class GaiaStarCatalog(StarCatalog):
 
     Notes
     -----
-    Expected input files should contain columns required for apparent-coordinate
-    conversion, including sky position, proper motion, parallax, and
-    ``phot_g_mean_mag`` or a physically convertible
-    ``phot_g_mean_flux``. Returned magnitudes are AB: Gaia's Vega-system
-    G magnitude receives the existing ``G`` Vega-to-AB offset, while a
-    physical flux density is converted directly with Astropy. The returned
-    ``i_mag`` column is a documented Gaia-G-as-``i_mag`` approximation; it is
-    not a Sloan/LSST i-band transformation. Existing LSST trixel files may use
+    Astrometric input files contain position, proper motion and parallax.
+    Calibrated rendering additionally requires an explicit ``magnitude_column``
+    and a ``passband``. FITS ``PASSBAND``, ``RESPHASH`` and ``MAGSYS`` metadata
+    must identify that exact response and AB convention. A physical band-mean
+    flux density may be selected with ``magnitude_system="flux_density"``.
+    :func:`simsit.photometry.synthetic_photometry` prepares matching AB columns
+    from supplied spectra. No stellar color/spectrum is inferred from G alone.
+
+    Without a selected response, this reader returns native Gaia G values:
+    Vega ``phot_g_mean_mag``, or AB from physical ``phot_g_mean_flux``. The
+    returned ``mag`` and ``MAGSYS`` identify that convention; G is never i.
+    These uncalibrated tables cannot enter the rendering pipeline.
+    Existing LSST trixel files may use
     ``coord_ra``,
     ``coord_dec``, ``pm_ra``, and ``pm_dec``. These legacy LSST columns are
     interpreted as J2000 positions, matching ``catalog_to_apparent``.
@@ -319,9 +341,59 @@ class GaiaStarCatalog(StarCatalog):
     ``catalog_to_apparent``.
     """
 
-    def __init__(self, gaia_dir, level=7):
+    def __init__(
+        self, gaia_dir, level=7, *, passband=None,
+        magnitude_column=None, magnitude_system="AB",
+    ):
         super().__init__(level=level)
         self.gaia_dir = gaia_dir
+        self.passband = passband
+        self.magnitude_column = magnitude_column
+        self.magnitude_system = magnitude_system
+        if passband is not None and not isinstance(passband, _Passband):
+            raise TypeError("passband must be a Passband.")
+        if passband is None and magnitude_column is not None:
+            raise ValueError("Selecting calibrated photometry requires an explicit passband response.")
+        if passband is not None and not magnitude_column:
+            raise ValueError("Calibrated catalogs require an explicit magnitude_column.")
+        if magnitude_system not in ("AB", "flux_density"):
+            raise ValueError("Calibrated magnitude_system must be AB or flux_density.")
+
+    def _magnitudes(self, data):
+        if self.passband is not None:
+            if (
+                data.meta.get("PASSBAND") != self.passband.name
+                or data.meta.get("RESPHASH") != self.passband.response_hash
+                or data.meta.get("MAGSYS") != "AB"
+                or data.meta.get("MAGCOL") != self.magnitude_column
+            ):
+                raise ValueError("Catalog passband, response hash and AB convention must match the instrument.")
+            if self.magnitude_column == "phot_g_mean_mag":
+                raise ValueError("Raw Gaia phot_g_mean_mag is Vega; supply calibrated AB magnitudes or spectra.")
+            column = data[self.magnitude_column]
+            metadata = {
+                "PASSBAND": self.passband.name, "RESPHASH": self.passband.response_hash,
+                "MAGSYS": "AB", "MAGCOL": "mag",
+            }
+            if self.magnitude_system == "AB":
+                if column.unit not in (None, u.mag, u.ABmag):
+                    raise ValueError("AB magnitude columns must not contain linear flux units.")
+                return np.ma.asarray(column, dtype=float).filled(np.nan), metadata
+        elif "phot_g_mean_mag" in data.colnames:
+            return (
+                np.ma.asarray(data["phot_g_mean_mag"], dtype=float).filled(np.nan),
+                {"PASSBAND": "Gaia_G", "MAGSYS": "Vega", "MAGCOL": "mag"},
+            )
+        elif "phot_g_mean_flux" in data.colnames:
+            column = data["phot_g_mean_flux"]
+            metadata = {"PASSBAND": "Gaia_G", "MAGSYS": "AB", "MAGCOL": "mag"}
+        else:
+            raise ValueError("Gaia catalog requires native G photometry or a calibrated selected column.")
+        try:
+            magnitudes = np.asarray(column.to(u.ABmag).value, dtype=float)
+        except (TypeError, u.UnitConversionError) as exc:
+            raise ValueError("Flux must be a physical flux density (band mean) convertible to ABmag.") from exc
+        return np.where(np.ma.getmaskarray(column), np.nan, magnitudes), metadata
 
     def _get_trixel_stars(self, idx, time):
         """
@@ -337,38 +409,12 @@ class GaiaStarCatalog(StarCatalog):
         Returns
         -------
         astropy.table.Table
-            Star table with apparent coordinates and ``i_mag``.
+            Star table with apparent coordinates and explicitly labeled ``mag``.
         """
         filename = os.path.join(self.gaia_dir, f"{idx}.fits")
         gaia_data = Table.read(filename)
 
-        if "phot_g_mean_mag" in gaia_data.colnames:
-            g_mag = np.ma.asarray(
-                gaia_data["phot_g_mean_mag"], dtype=float
-            ).filled(np.nan)
-            # Gaia catalogue magnitudes are Vega magnitudes; the renderer
-            # consumes AB magnitudes.
-            g_mag += vega_to_ab_offset("G")
-        elif "phot_g_mean_flux" in gaia_data.colnames:
-            try:
-                g_mag = np.ma.asarray(
-                    gaia_data["phot_g_mean_flux"].to(u.ABmag).value,
-                    dtype=float,
-                ).filled(np.nan)
-                g_mag = np.where(
-                    np.ma.getmaskarray(gaia_data["phot_g_mean_flux"]), np.nan, g_mag,
-                )
-            except (TypeError, u.UnitConversionError) as exc:
-                raise ValueError(
-                    "phot_g_mean_flux must be a physical flux density "
-                    "convertible to ABmag; electron/s requires a "
-                    "release-specific zeropoint."
-                ) from exc
-        else:
-            raise ValueError(
-                "Gaia catalog must provide phot_g_mean_mag or a physical "
-                "phot_g_mean_flux."
-            )
+        g_mag, photometric_metadata = self._magnitudes(gaia_data)
 
         if "coord_ra" in gaia_data.colnames:
             standard = False
@@ -418,10 +464,10 @@ class GaiaStarCatalog(StarCatalog):
                 {
                     "ra_rad": np.array([], dtype=float),
                     "dec_rad": np.array([], dtype=float),
-                    "i_mag": np.array([], dtype=float),
+                    "mag": np.array([], dtype=float),
                     "ra": np.array([], dtype=float),
                     "dec": np.array([], dtype=float),
-                }
+                }, meta=photometric_metadata,
             )
 
         if standard:
@@ -453,7 +499,8 @@ class GaiaStarCatalog(StarCatalog):
             parallax=parallax[valid],
         )
 
-        table["i_mag"] = g_mag[valid]
+        table["mag"] = g_mag[valid]
         table["ra"] = np.rad2deg(table["ra_rad"])
         table["dec"] = np.rad2deg(table["dec_rad"])
+        table.meta.update(photometric_metadata)
         return table

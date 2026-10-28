@@ -42,7 +42,11 @@ def convert_gaia_magnitude(gaia_g, gaia_bp, gaia_rp, target_filter="2MASS_Ks"):
     -----
     These are empirical polynomial transforms based on Gaia documentation.
     They should be treated as approximate and used only within the validity
-    range of the published relations.
+    range of the published relations. For SDSS DR12 i, the published
+    ``G - i`` relation requires ``0 < BP-RP < 4.5`` and has approximately
+    0.099 mag scatter, not precision spectral calibration.
+    Reference: Evans et al. (2018), Appendix A, Tables A.1/A.2,
+    https://doi.org/10.1051/0004-6361/201832756 .
     """
     coeff_dict = {
         "2MASS_Ks": [0.1885, -2.092, 0.1345],
@@ -56,21 +60,59 @@ def convert_gaia_magnitude(gaia_g, gaia_bp, gaia_rp, target_filter="2MASS_Ks"):
         raise ValueError(f"Unsupported target_filter '{target_filter}'. Supported values: {supported}")
 
     bp_minus_rp = np.asarray(gaia_bp) - np.asarray(gaia_rp)
+    if target_filter == "SDSS12_i" and (
+        not np.isfinite(bp_minus_rp).all()
+        or np.any((bp_minus_rp <= 0) | (bp_minus_rp >= 4.5))
+    ):
+        raise ValueError("SDSS DR12 i transformation requires 0 < BP-RP < 4.5.")
     gaia_g = np.asarray(gaia_g)
     c0, c1, c2 = coeff_dict[target_filter]
 
     return gaia_g + c0 + c1 * bp_minus_rp + c2 * (bp_minus_rp**2)
 
 
-def spectrum_to_magnitude(*args, **kwargs):
+def spectrum_to_magnitude(wavelength, flux_lambda, passband):
     """
     Convert a spectrum to a magnitude in a specified photometric system.
 
-    Notes
-    -----
-    This function is not yet implemented.
+    The spectrum and wavelength grid require Astropy physical units and must
+    cover the supplied response curve. Uses the photon-weighted AB convention
+    and the exact -48.60 AB zero point, matching Astropy's ABmag unit.
     """
-    raise NotImplementedError("spectrum_to_magnitude is not yet implemented.")
+    from .passband import spectrum_to_magnitude as integrate_spectrum
+    return integrate_spectrum(wavelength, flux_lambda, passband)
+
+
+def synthetic_photometry(table, passband, *, wavelength_column, flux_column, magnitude_column="mag"):
+    """Copy a spectral catalog and add matching passband AB magnitudes.
+
+    Each row contains wavelength/flux vectors with physical column units.
+    No color or stellar spectrum is inferred from a single Gaia magnitude.
+    The response digest is recorded so rendering cannot silently use another
+    response with the same display name.
+    """
+    if magnitude_column in table.colnames or magnitude_column == "phot_g_mean_mag":
+        raise ValueError("Choose a new magnitude column; native photometry is not overwritten.")
+    wavelength = table[wavelength_column]
+    flux = table[flux_column]
+    if wavelength.unit is None or flux.unit is None:
+        raise ValueError("Spectral catalog columns require physical units.")
+    if np.ma.getmaskarray(wavelength).any() or np.ma.getmaskarray(flux).any():
+        raise ValueError("Spectral catalog samples must not be masked.")
+    magnitudes = [
+        spectrum_to_magnitude(
+            u.Quantity(wavelength[i], wavelength.unit),
+            u.Quantity(flux[i], flux.unit), passband,
+        )
+        for i in range(len(table))
+    ]
+    out = table.copy(copy_data=True)
+    out[magnitude_column] = np.asarray(magnitudes, dtype=float)
+    out.meta["PASSBAND"] = passband.name
+    out.meta["RESPHASH"] = passband.response_hash
+    out.meta["MAGSYS"] = "AB"
+    out.meta["MAGCOL"] = magnitude_column
+    return out
 
 
 def get_gaia_sources(ra_deg, dec_deg, radius_deg, gaia_data_release=3, star_lim=-1):

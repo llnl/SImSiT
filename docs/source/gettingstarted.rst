@@ -102,12 +102,59 @@ by the ``GaiaStarCatalog`` reader in the Python package.
 Raw Gaia tables use ``ra``/``dec`` in degrees, ``pmra``/``pmdec`` in
 milliarcseconds/year, ``parallax`` in milliarcseconds, and ``ref_epoch`` in
 Julian years. Legacy LSST-style trixels use J2000 ``coord_ra``/``coord_dec``
-and unit-bearing ``pm_ra``/``pm_dec``/``parallax`` columns. Magnitudes may
-come from Gaia's Vega ``phot_g_mean_mag`` (converted to AB), or from
-physical flux-density units such as nJy in ``phot_g_mean_flux``. Raw
-electron/second flux alone is insufficient without a release-specific
-photometric zeropoint. The legacy ``i_mag`` output is an AB Gaia G-band
-proxy, not a calibrated i-band color transformation.
+and unit-bearing ``pm_ra``/``pm_dec``/``parallax`` columns.
+Native Gaia queries retain Vega ``phot_g_mean_mag`` or AB from physical
+flux-density units such as nJy. Raw electron/second flux alone is
+insufficient without a release-specific photometric zeropoint.
+The output is named ``mag`` with explicit ``MAGSYS`` and ``PASSBAND``;
+G is not an i-band proxy and native queries are not calibrated render inputs.
+
+Named response curves
+=====================
+
+Simulation requires an explicit ``instrument.passband``:
+
+.. code-block:: yaml
+
+   passband:
+     name: synthetic_optical
+     wavelength_nm: [400.0, 800.0]
+     throughput: [1.0, 1.0]
+     reference: Synthetic top-hat example, not a measured response
+
+For scientific use, supply a measured response and its provenance instead.
+The provided examples use mock catalogs and these explicitly synthetic curves.
+Zeropoints are derived from the response and unobscured collecting area.
+Optional empirical ``zeropoint`` values require ``zeropoint_reference`` and
+cannot make total transmission exceed one. Conditions offsets describe
+additional achromatic transmission changes, not a change of passband.
+
+``simsit.photometry.spectrum_to_magnitude`` integrates physical
+wavelength/flux-density quantities over the response. The complete response
+domain must be covered; no stellar spectrum or color is guessed. It uses the
+photon-weighted AB system and exact -48.60 zero point.
+
+To prepare an astrometric catalog that also contains unit-bearing spectral
+vector columns:
+
+.. code-block:: python
+
+   from simsit.photometry import synthetic_photometry
+
+   calibrated = synthetic_photometry(
+       spectral_catalog, passband,
+       wavelength_column="wavelength", flux_column="flux",
+       magnitude_column="band_mag",
+   )
+
+This returns a copy with the new column and ``PASSBAND``, ``RESPHASH``,
+``MAGSYS`` and ``MAGCOL`` metadata. Original photometry is preserved.
+Store the calibrated trixels separately and configure
+``catalog.magnitude_column: band_mag``. All four metadata values must match
+the selected response. Band-mean physical flux-density columns can instead
+use ``catalog.magnitude_system: flux_density``; raw Gaia G is not used for
+another band. Response identity and calibration references are recorded
+in ``FILTER``, ``RESPHASH``, ``BANDREF`` and ``ZPREF`` FITS keywords.
 
 Units and reproducibility
 =========================
