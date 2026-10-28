@@ -20,13 +20,14 @@ class SmallCatalog:
         return Table({"ra": [start.ra.deg], "dec": [start.dec.deg], "i_mag": [18.0]})
 
 
-@pytest.mark.parametrize("tracking,n_sat,magnitudes", [
-    ("sidereal", 1, [12, 13]),
-    ("orbit", 1, None),
-    ("sidereal", 2, [12, 13]),
-    ("orbit", 2, None),
+@pytest.mark.parametrize("tracking,n_sat,magnitudes,mode", [
+    ("sidereal", 1, [12, 13], "geometric"),
+    ("orbit", 1, None, "geometric"),
+    ("sidereal", 2, [12, 13], "geometric"),
+    ("orbit", 2, None, "geometric"),
+    ("orbit", 1, [12, 13], "apparent"),
 ])
-def test_seeded_simulation_and_fits_truth(tmp_path, monkeypatch, tracking, n_sat, magnitudes):
+def test_seeded_simulation_and_fits_truth(tmp_path, monkeypatch, tracking, n_sat, magnitudes, mode):
     site = Observer(
         location=EarthLocation.from_geodetic(-106.6 * u.deg, 35.1 * u.deg, 1600 * u.m),
         name="test",
@@ -50,6 +51,7 @@ def test_seeded_simulation_and_fits_truth(tmp_path, monkeypatch, tracking, n_sat
             "error": {"t_rewind": 1, "v_perturb": 0, "boresight": 0},
         },
         "catalog": {"develop": True, "min_snr": 0},
+        "observation": {"mode": mode},
     }
     for name in ("first", "second"):
         current = deepcopy(config)
@@ -62,6 +64,8 @@ def test_seeded_simulation_and_fits_truth(tmp_path, monkeypatch, tracking, n_sat
     with fits.open(first / "images/0001.fits") as hdus:
         assert hdus[0].header["BUNIT"] == "ADU"
         assert hdus[0].header["GAIN"] == 2
+        assert hdus[0].header["FRAME"] == "GCRF"
+        assert hdus[0].header["OBSMODE"] == mode
         assert np.isfinite(hdus[0].data).all()
     with open(first / "images/sample_metadata_1.yaml") as stream:
         example = list(yaml.safe_load_all(stream))

@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 
 import galsim
 import numpy as np
-import ssatk
+from . import backend
 
 __all__ = [
     "Tracker",
@@ -82,9 +82,15 @@ class OrbitTracker(Tracker):
         Mount type. Only equatorial mounts are currently supported.
     propagator : object, optional
         Propagator used to predict object motion.
+    observation_mode : {'geometric', 'apparent'}, optional
+        Shared satellite direction convention; apparent includes light time
+        and observer-velocity aberration, but not atmospheric refraction.
     """
 
-    def __init__(self, *, orbit, observer, t0, rot_sky_pos0, mount="EQ", propagator=None):
+    def __init__(
+        self, *, orbit, observer, t0, rot_sky_pos0, mount="EQ", propagator=None,
+        observation_mode="geometric",
+    ):
         mount = mount.upper()
         if mount != "EQ":
             raise ValueError(f"Unsupported mount type: {mount}. Only 'EQ' is implemented.")
@@ -95,10 +101,11 @@ class OrbitTracker(Tracker):
         self.rot_sky_pos0 = rot_sky_pos0
         self.mount = mount
         self.propagator = propagator
+        self.observation_mode = backend.observation_mode(observation_mode)
 
     def get_boresight(self, time):
         """
-        Return the tracked object's apparent sky position.
+        Return the tracked object's sky position under the selected convention.
 
         Parameters
         ----------
@@ -110,11 +117,12 @@ class OrbitTracker(Tracker):
         galsim.CelestialCoord
             Apparent right ascension and declination of the tracked object.
         """
-        ra, dec, _ = ssatk.radec(
+        ra, dec, _ = backend.sky_coordinates(
             self.orbit,
             time,
             observer=self.observer,
             propagator=self.propagator,
+            mode=self.observation_mode,
         )
         return galsim.CelestialCoord(ra * galsim.radians, dec * galsim.radians)
 

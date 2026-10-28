@@ -39,8 +39,12 @@ WCS, or detector rendering. Python 3.10 or newer is required.
   explicit Astropy `Time` objects; FITS dates use TAI. Bare cadence durations
   are seconds. Generated orbit heights refer to a WGS72 spherical radius,
   not height above terrain or the WGS84 ellipsoid.
-- Satellite directions use geometric lines of sight without light-time
-  correction. Gaia stars use geocentric apparent-coordinate approximations.
+- The `simsit.backend` boundary uses SSATK exclusively; quantities convert to
+  SI and numeric epochs explicitly mean GPS seconds. Satellite directions
+  default to geometric lines of sight; `observation.mode: apparent` enables
+  iterative light-time and observer-velocity aberration for both tracking
+  and rendering. `FRAME` and `OBSMODE` are recorded in FITS headers.
+  Gaia stars use geocentric apparent-coordinate approximations.
   The legacy `i_mag` catalog field is AB Gaia G as an i-band proxy, not a
   calibrated i-band color transformation.
 - Magnitudes and surface brightness passed to the renderer are AB values in

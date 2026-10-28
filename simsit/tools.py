@@ -8,12 +8,12 @@ import sys
 import astropy.units as u
 import galsim
 import numpy as np
-import ssatk
 from astropy.coordinates import AltAz, GCRS
 from astropy.table import Table
 from astropy.time import Time
 
 from .tracker import transform_wcs
+from . import backend
 
 __all__ = [
     "draw_stars",
@@ -138,6 +138,7 @@ def draw_sat(
     nphot,
     nsplit=10,
     propagator=None,
+    observation_mode="geometric",
 ):
     """
     Draw one or more tracked objects into an image.
@@ -197,7 +198,9 @@ def draw_sat(
     wcst = None
 
     for idx, orb in enumerate(orbit):
-        ra, dec, _ = ssatk.radec(orb, ts, observer=observer, propagator=propagator)
+        ra, dec, _ = backend.sky_coordinates(
+            orb, ts, observer=observer, propagator=propagator, mode=observation_mode,
+        )
 
         xy0 = wcs0.posToImage(
             galsim.CelestialCoord(ra[0] * galsim.radians, dec[0] * galsim.radians)
@@ -302,7 +305,7 @@ def random_boresight(*, observer, t0, horizon, rng):
     alt = np.arctan(z / np.sqrt(1 - z**2))
     az = rng.uniform(0.0, 2 * np.pi)
 
-    location = observer._location  # Replace with a public accessor if available.
+    location = backend.observer_location(observer)
     sc = AltAz(az * u.rad, alt * u.rad, obstime=t0, location=location)
     radec = sc.transform_to(GCRS(obstime=t0))
     return galsim.CelestialCoord(
@@ -369,7 +372,7 @@ def generate_orbit(height, coord, heading, vperp, vpar, observer, t0):
     r_obs, _ = observer.getRV(t0)
     los = np.array(coord.get_xyz())
     b = 2 * np.dot(los, r_obs)
-    c = np.sum(r_obs**2) - (ssatk.constants.WGS72_EARTH_RADIUS + height) ** 2
+    c = np.sum(r_obs**2) - (backend.EARTH_RADIUS_M + height) ** 2
     disc = b**2 - 4 * c
     if not np.isfinite(disc) or disc < 0:
         raise ValueError("Line of sight does not intersect the requested altitude shell.")
@@ -389,16 +392,16 @@ def generate_orbit(height, coord, heading, vperp, vpar, observer, t0):
     n_head = north_los * np.cos(heading)
     n_head += east_los * np.sin(heading)
 
-    n_sat = ssatk.normed(r_sat)
+    n_sat = backend.normed(r_sat)
     vpar3 = n_sat * vpar
     vperp3 = n_head - n_sat * np.dot(n_head, n_sat)
-    tangent_norm = ssatk.norm(vperp3)
+    tangent_norm = backend.norm(vperp3)
     if tangent_norm < 1e-12:
         raise ValueError("Heading has no component tangent to the altitude shell.")
     vperp3 *= vperp / tangent_norm
     v_sat = vperp3 + vpar3
 
-    return ssatk.Orbit(r_sat, v_sat, t0)
+    return backend.orbit_from_state(r_sat, v_sat, t0)
 
 
 def get_line_gsobject(p0, p1):

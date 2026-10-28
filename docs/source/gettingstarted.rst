@@ -113,8 +113,15 @@ Units and reproducibility
 =========================
 
 Orbit states use GCRF meters and meters/second; observation times are Astropy
-``Time`` objects and FITS dates are TAI. Satellite positions use SSATK's
-geometric line of sight without light-time correction. Gaia stellar
+``Time`` objects and FITS dates are TAI. The ``simsit.backend`` module is
+the sole astrodynamics boundary. Numeric epochs there are explicitly GPS
+seconds, not implicit calendar dates; quantity-valued states are converted
+to SI and non-GCRF states must be transformed before constructing an orbit.
+Satellite positions default to geometric lines of sight. Set
+``observation.mode: apparent`` to use iterative light-time and
+observer-velocity aberration consistently for satellite tracking and
+rendering. ``FRAME`` and ``OBSMODE`` record these conventions in image
+and truth-WCS headers. Neither mode adds atmospheric refraction. Gaia stellar
 positions use the geocentric apparent-coordinate approximation. These
 approximations should not be interpreted as precision astrometry.
 

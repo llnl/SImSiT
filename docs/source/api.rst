@@ -5,6 +5,7 @@ API
    :toctree: modules
    :template: automodapi_templ.rst
 
+   simsit.backend
    simsit.cadence
    simsit.catalog
    simsit.instrument

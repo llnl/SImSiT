@@ -11,11 +11,11 @@ import astropy.units as u
 import galsim
 import numpy as np
 import simsit
-import ssatk
 import yaml
 from astropy.time import Time
 from tqdm import tqdm
 from .tracker import transform_wcs as _transform_wcs
+from . import backend
 
 
 def make_image(config, rng, parameters):
@@ -56,6 +56,7 @@ def make_image(config, rng, parameters):
     psf_fwhm = parameters["psf_fwhm"]
     i_obs = parameters["i_obs"]
     propagator = parameters["propagator"]
+    observation_mode = backend.observation_mode(parameters.get("observation_mode", "geometric"))
 
     sky_phot = 10 ** (-0.4 * (sky_sb - zp))
     psf = galsim.Kolmogorov(
@@ -131,6 +132,7 @@ def make_image(config, rng, parameters):
         observer=observer,
         nphot=sat_nphots,
         propagator=propagator,
+        observation_mode=observation_mode,
     )
 
     if wcst is None:
@@ -198,7 +200,7 @@ def make_image(config, rng, parameters):
         hdu_wcs.header["TELAPSE"] = exptime
         hdu_wcs.header["TIMEUNIT"] = "s"
 
-    location = observer._location  # Replace with a public accessor if available.
+    location = backend.observer_location(observer)
     obsx = location.x.to(u.m).value
     obsy = location.y.to(u.m).value
     obsz = location.z.to(u.m).value
@@ -229,6 +231,8 @@ def make_image(config, rng, parameters):
         header["QE"] = (instrument.quantum_efficiency, "electrons/photon")
         header["EXPTIME"] = (exptime, "seconds")
         header["MAGSYS"] = "AB"
+        header["FRAME"] = "GCRF"
+        header["OBSMODE"] = observation_mode
     hdu.header["BUNIT"] = "ADU"
     hdu_true_wcs_start.header["MAGZP"] = adu_zp
     hdu_true_wcs_end.header["MAGZP"] = adu_zp
@@ -294,7 +298,8 @@ def simulate(config):
 
     reference_example_hdul = fits.HDUList([fits.PrimaryHDU()])
     reference_hdul = fits.HDUList([fits.PrimaryHDU()])
-    propagator = ssatk.KeplerianPropagator()
+    propagator = backend.keplerian_propagator()
+    observation_mode = backend.observation_mode(config.get("observation", {}).get("mode", "geometric"))
 
     for i_obs in tqdm(range(config["n_obs"])):
         with simsit.tools.nostdout():
@@ -303,11 +308,7 @@ def simulate(config):
             exptime = rng.choice(config["cadence"]["exptime"])
             site = astroplan.Observer.at_site(rng.choice(config["sites"]))
 
-            observer = ssatk.EarthObserver(
-                lon=site.location.lon.to(u.deg).value,
-                lat=site.location.lat.to(u.deg).value,
-                elevation=site.location.height.to(u.m).value,
-            )
+            observer = backend.observer_from_location(site.location)
 
             cond_cfg = config["conditions"]
             psf_fwhm = rng.uniform(*cond_cfg["psf_fwhm_range"])
@@ -410,15 +411,16 @@ def simulate(config):
 
             if tracker_cfg["type"] == "orbit":
                 t_prev = t0 - tracking_error["t_rewind"] * u.min
-                r_prev, v_prev = ssatk.rv(orbit, t_prev, propagator=propagator)
+                r_prev, v_prev = backend.states(orbit, t_prev, propagator=propagator)
                 v_prev += rng.normal(scale=tracking_error["v_perturb"], size=3)
-                tracking_orbit = ssatk.Orbit(r_prev, v_prev, t_prev)
+                tracking_orbit = backend.orbit_from_state(r_prev, v_prev, t_prev)
                 tracker = simsit.OrbitTracker(
                     orbit=tracking_orbit,
                     observer=observer,
                     t0=t0,
                     rot_sky_pos0=rot_sky_pos0,
                     propagator=propagator,
+                    observation_mode=observation_mode,
                 )
 
             elif tracker_cfg["type"] == "sidereal":
@@ -445,6 +447,7 @@ def simulate(config):
                 zp=zp,
                 i_obs=i_obs,
                 propagator=propagator,
+                observation_mode=observation_mode,
             )
 
             hdu, hdu_true_wcs_start, hdu_true_wcs_end, image_metadata, reference_hdulist = make_image(

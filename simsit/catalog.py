@@ -11,7 +11,7 @@ import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.table import Table, vstack
 from astropy.time import Time
-import ssatk
+from . import backend
 
 from .photometry import vega_to_ab_offset
 
@@ -443,7 +443,7 @@ class GaiaStarCatalog(StarCatalog):
             pmdec = pmdec[valid]
 
         table = Table()
-        table["ra_rad"], table["dec_rad"] = ssatk.ssapy.utils.catalog_to_apparent(
+        table["ra_rad"], table["dec_rad"] = backend.catalog_to_apparent(
             ra,
             dec,
             time,
