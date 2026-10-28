@@ -43,6 +43,9 @@ Documentation = "https://simsit.readthedocs.io"
 Issues = "https://github.com/LLNL/simsit/issues"
 Changelog = "https://github.com/LLNL/simsit/blob/main/change_log.md"
 
+[project.scripts]
+simsit-run = "simsit.cli:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest",

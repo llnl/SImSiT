@@ -4,6 +4,7 @@ Generate synthetic observations containing stars and satellites.
 
 import glob
 import os
+from pathlib import Path
 
 import astroplan
 import astropy.io.fits as fits
@@ -17,9 +18,94 @@ from tqdm import tqdm
 from .tracker import transform_wcs as _transform_wcs
 from . import backend
 from .brightness import model_from_config as _model_from_config
+from .run_config import (
+    build_provenance,
+    fingerprint_inputs,
+    _file_sha256,
+    prepare_output,
+    validate_config,
+    write_manifest,
+)
+
+__all__ = ["make_image", "simulate", "make_sky_flat"]
 
 
-def make_image(config, rng, parameters):
+class _RunLifecycle:
+    def __init__(
+        self,
+        root,
+        provenance,
+        input_paths,
+        stale_outputs_retained,
+    ):
+        self.root = root
+        self.provenance = provenance
+        self.input_paths = [
+            Path(path).resolve(strict=False) for path in input_paths
+        ]
+        self.input_path_set = set(self.input_paths)
+        self.products = set()
+        self.product_hashes = {}
+        self.stale_outputs_retained = stale_outputs_retained
+
+    def _write(self, status):
+        write_manifest(
+            self.root,
+            self.provenance,
+            status=status,
+            stale_outputs_retained=self.stale_outputs_retained,
+            product_records=(
+                {"path": path, "sha256": digest}
+                for path, digest in self.product_hashes.items()
+            ),
+        )
+
+    def start(self):
+        self._write("running")
+
+    def record_inputs(self, paths):
+        new_paths = []
+        for path in paths:
+            candidate = Path(path)
+            if candidate in self.input_path_set:
+                continue
+            resolved = (
+                candidate
+                if candidate.is_absolute()
+                else candidate.resolve(strict=False)
+            )
+            if resolved not in self.input_path_set:
+                self.input_path_set.add(resolved)
+                self.input_paths.append(resolved)
+                new_paths.append(resolved)
+        if new_paths:
+            existing = self.provenance.get("input_sha256", [])
+            self.provenance["input_sha256"] = sorted(
+                [*existing, *fingerprint_inputs(new_paths)],
+                key=lambda item: (
+                    item["path"], item.get("path_sha256", ""), item["sha256"]
+                ),
+            )
+            self._write("running")
+
+    def record_product(self, path):
+        path = Path(path)
+        self.products.add(path)
+        self.product_hashes[
+            path.resolve(strict=True).relative_to(
+                Path(self.root).resolve(strict=True)
+            ).as_posix()
+        ] = _file_sha256(path)
+        self._write("running")
+
+    def complete(self):
+        self._write("complete")
+
+    def failed(self):
+        self._write("failed")
+
+
+def make_image(config, rng, parameters, input_recorder=None):
     """
     Generate a single simulated image with stars and satellites.
 
@@ -115,7 +201,11 @@ def make_image(config, rng, parameters):
     p0 = tracker.get_boresight(t0)
     p1 = tracker.get_boresight(t0 + exptime * u.s)
 
-    stars = catalog.get_stars(p0, p1, radius, t0)
+    try:
+        stars = catalog.get_stars(p0, p1, radius, t0)
+    finally:
+        if input_recorder is not None:
+            input_recorder(getattr(catalog, "input_paths", ()))
     if (
         stars.meta.get("PASSBAND") != instrument.passband.name
         or stars.meta.get("RESPHASH") != instrument.passband.response_hash
@@ -357,7 +447,12 @@ def make_image(config, rng, parameters):
     return hdu, hdu_true_wcs_start, hdu_true_wcs_end, image_metadata, reference_hdulist
 
 
-def simulate(config):
+def simulate(
+    config,
+    *,
+    overwrite=False,
+    input_paths=(),
+):
     """
     Run the full simulation and write outputs to disk.
 
@@ -371,6 +466,9 @@ def simulate(config):
     Output directories default to ``images`` and ``reference`` but may be
     overridden with ``image_dir`` and ``reference_dir`` in the config.
     """
+    config = validate_config(config)
+    input_paths = list(input_paths)
+    provenance = build_provenance(config, input_paths=input_paths)
     image_dir = config.get("image_dir", "images")
     reference_dir = config.get("reference_dir", "reference")
     instrument = simsit.Instrument.from_config(config["instrument"])
@@ -380,10 +478,48 @@ def simulate(config):
     _model_from_config(instrument, photometry)
     if photometry["model"] != "constant" and config["sat"].get("mag_range") is not None:
         raise ValueError("Physical photometry cannot also use synthetic mag_range.")
+    sites = {
+        site_name: astroplan.Observer.at_site(site_name)
+        for site_name in config["sites"]
+    }
+    if not config["catalog"].get("develop", False):
+        catalog_root = Path(config["catalog"]["gaia_dir"]).resolve(strict=True)
+        if not catalog_root.is_dir():
+            raise NotADirectoryError(os.fspath(catalog_root))
 
-    for d in [image_dir, reference_dir]:
-        path = os.path.join(config["outdir"], d)
-        os.makedirs(path, exist_ok=True)
+    output_root = Path(config["outdir"])
+    stale_outputs_retained = (
+        output_root.exists() and any(output_root.iterdir())
+    )
+    prepare_output(
+        config["outdir"],
+        overwrite=overwrite,
+        relative_dirs=(image_dir, reference_dir),
+    )
+    lifecycle = _RunLifecycle(
+        config["outdir"],
+        provenance,
+        input_paths,
+        stale_outputs_retained,
+    )
+    lifecycle.start()
+    try:
+        _simulate_impl(
+            config,
+            image_dir,
+            reference_dir,
+            instrument,
+            sites,
+            lifecycle,
+        )
+    except BaseException:
+        lifecycle.failed()
+        raise
+    else:
+        lifecycle.complete()
+
+
+def _simulate_impl(config, image_dir, reference_dir, instrument, sites, lifecycle):
 
     sample_metadata = []
     example_metadata = []
@@ -403,7 +539,7 @@ def simulate(config):
             rng = np.random.default_rng(config["seed"] + i_obs)
 
             exptime = rng.choice(config["cadence"]["exptime"])
-            site = astroplan.Observer.at_site(rng.choice(config["sites"]))
+            site = sites[str(rng.choice(config["sites"]))]
 
             observer = backend.observer_from_location(site.location)
 
@@ -557,6 +693,7 @@ def simulate(config):
                     config,
                     rng,
                     parameters,
+                    input_recorder=lifecycle.record_inputs,
                 )
             )
 
@@ -570,21 +707,27 @@ def simulate(config):
 
             sample_metadata.append(image_metadata)
 
-            hdu.writeto(
-                os.path.join(config["outdir"], image_dir, f"{i_obs + 1:04d}.fits"),
-                overwrite=True,
+            image_path = os.path.join(
+                config["outdir"], image_dir, f"{i_obs + 1:04d}.fits"
             )
-            hdu_true_wcs_start.writeto(
-                os.path.join(config["outdir"], reference_dir, f"{i_obs + 1:04d}.wcs.fits"),
-                overwrite=True,
+            start_path = os.path.join(
+                config["outdir"], reference_dir, f"{i_obs + 1:04d}.wcs.fits"
             )
-            hdu_true_wcs_end.writeto(
-                os.path.join(config["outdir"], reference_dir, f"{i_obs + 1:04d}.wcst.fits"),
-                overwrite=True,
+            end_path = os.path.join(
+                config["outdir"], reference_dir, f"{i_obs + 1:04d}.wcst.fits"
             )
+            hdu.writeto(image_path, overwrite=True)
+            hdu_true_wcs_start.writeto(start_path, overwrite=True)
+            hdu_true_wcs_end.writeto(end_path, overwrite=True)
+            for product in (image_path, start_path, end_path):
+                lifecycle.record_product(product)
 
-    with open(os.path.join(config["outdir"], reference_dir, "sample_metadata.yaml"), "w") as f:
+    sample_metadata_path = os.path.join(
+        config["outdir"], reference_dir, "sample_metadata.yaml"
+    )
+    with open(sample_metadata_path, "w") as f:
         yaml.safe_dump_all(sample_metadata, f)
+    lifecycle.record_product(sample_metadata_path)
 
     example_metadata_filename = os.path.join(
         config["outdir"],
@@ -593,18 +736,27 @@ def simulate(config):
     )
     with open(example_metadata_filename, "w") as f:
         yaml.safe_dump_all(example_metadata, f)
+    lifecycle.record_product(example_metadata_filename)
 
+    reference_truth_path = os.path.join(
+        config["outdir"], reference_dir, "reference_truth.fits"
+    )
     reference_hdul.writeto(
-        os.path.join(config["outdir"], reference_dir, "reference_truth.fits"),
+        reference_truth_path,
         overwrite=True,
+    )
+    lifecycle.record_product(reference_truth_path)
+    example_truth_path = os.path.join(
+        config["outdir"], image_dir, f"reference_truth_{config['n_example']}.fits"
     )
     reference_example_hdul.writeto(
-        os.path.join(config["outdir"], image_dir, f"reference_truth_{config['n_example']}.fits"),
+        example_truth_path,
         overwrite=True,
     )
+    lifecycle.record_product(example_truth_path)
 
 
-def make_sky_flat(configfile):
+def make_sky_flat(configfile, *, overwrite=False):
     """
     Generate a median sky flat from simulated images.
 
@@ -617,6 +769,19 @@ def make_sky_flat(configfile):
         config = yaml.safe_load(f)
 
     image_dir = config.get("image_dir", "images")
+    output_root = Path(config["outdir"])
+    prepare_output(
+        output_root,
+        overwrite=overwrite,
+        relative_dirs=(image_dir,),
+        require_empty=False,
+        create=False,
+    )
+    target = output_root / image_dir / "sky_flat.fits"
+    if target.is_symlink():
+        raise ValueError("sky-flat product must not be a symlink")
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"sky-flat already exists: {target}")
     data_path = os.path.join(config["outdir"], image_dir)
 
     all_files = sorted(glob.glob(os.path.join(data_path, "????.fits")))
@@ -646,4 +811,11 @@ def make_sky_flat(configfile):
     )
 
     hdu = fits.PrimaryHDU(sky_flat)
-    hdu.writeto(os.path.join(config["outdir"], image_dir, "sky_flat.fits"), overwrite=True)
+    prepare_output(
+        output_root,
+        overwrite=overwrite,
+        relative_dirs=(image_dir,),
+        require_empty=False,
+        create=True,
+    )
+    hdu.writeto(target, overwrite=overwrite)

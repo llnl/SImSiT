@@ -18,12 +18,17 @@ To generate a basic example dataset, run:
 
 .. code-block:: bash
 
-   python scripts/simulate.py config/sidereal.yaml
+   simsit-run config/sidereal.yaml
 
 This creates output under the directory specified by ``outdir`` in the
 configuration file. By default, simulated images are written to an ``images/``
 subdirectory and reference products are written to a ``reference/``
-subdirectory.
+subdirectory. From a source checkout that has not installed the console
+script, the equivalent command is:
+
+.. code-block:: bash
+
+   PYTHONPATH=. python -m simsit.cli config/sidereal.yaml
 
 Configuration
 =============
@@ -52,7 +57,7 @@ Sidereal-tracking example
 
 .. code-block:: bash
 
-   python scripts/simulate.py config/sidereal.yaml
+   simsit-run config/sidereal.yaml
 
 This produces simulated observations using a sidereal-tracking configuration.
 
@@ -61,7 +66,7 @@ Target-tracking example
 
 .. code-block:: bash
 
-   python scripts/simulate.py config/target.yaml
+   simsit-run config/target.yaml
 
 This produces simulated observations using a target-tracking configuration.
 
@@ -70,7 +75,7 @@ Empty-field target-tracking example
 
 .. code-block:: bash
 
-   python scripts/simulate.py config/empty_target.yaml
+   simsit-run config/empty_target.yaml
 
 This example can be used to generate target-tracking images without a simulated
 satellite source.
@@ -197,6 +202,71 @@ assumptions; it does not infer spacecraft geometry or material properties.
 In apparent observation mode, SSATK changes direction using light-time and
 aberration, while radiometry remains the geometric model evaluated at the
 explicit arrival state.
+
+Run lifecycle and provenance
+============================
+
+The CLI validates the complete configuration before creating the output root.
+It resolves all configured observing sites and, for a non-development Gaia
+catalog, checks that ``catalog.gaia_dir`` exists and is a directory before
+writing anything.
+
+Output roots are non-destructive by default. A nonempty root is rejected:
+
+.. code-block:: bash
+
+   simsit-run config/sidereal.yaml --overwrite
+
+``--overwrite`` is explicit and overwrites products with the same current-run
+names without deleting unrelated files. Relative ``image_dir`` and
+``reference_dir`` values must remain contained in ``outdir``. Before any
+directory or manifest write, every existing entry beneath ``outdir`` is
+checked without following directory links; any symlink, including an
+unrelated, dangling, file, or directory link, causes refusal. This assumes
+the output directory is stable and owned by the run process; concurrent
+filesystem changes are outside the guarantee.
+
+Every started run writes an atomic ``provenance.json`` manifest. Its lifecycle
+status is ``running``, ``complete``, or ``failed``. A complete manifest lists
+only files written by that run and includes their hashes. A failed manifest
+records products written before the failure. Existing files retained during an
+overwrite are documented as stale and are not included in the current product
+inventory.
+
+Provenance includes source-module hashes, dependency versions, the
+configuration digest, and explicit input hashes. The CLI fingerprints its YAML
+configuration and, for non-development Gaia runs, only the FITS trixels
+actually read. It does not hash an entire potentially large catalog directory.
+Input labels are sanitized; raw personal filesystem paths are not stored in the
+manifest. Each input is hashed once when first consumed, and each product is
+hashed once after its successful write. Intermediate ``running`` updates and
+the final lifecycle state reuse those cached records rather than rehashing all
+earlier files.
+
+Limits
+======
+
+The manifest is a reproducibility and file-integrity record, not a scientific
+validation report. Matching hashes and dependency versions do not guarantee
+identical results across operating systems, hardware, numerical libraries, or
+external site/catalog changes. Retained stale files are not deleted and must
+be removed or archived separately when a clean output directory is required.
+
+The example curves and mock catalogs are synthetic. Physical satellite
+photometry uses the configured public SSATK gray models and caller-supplied
+geometry/material parameters; it is not a calibrated spacecraft spectrum or a
+detectability claim. Real Gaia rendering still requires calibrated passband
+metadata and compatible magnitude columns.
+
+Sky-flat helper
+===============
+
+The legacy ``make_sky_flat(configfile, *, overwrite=False)`` helper is separate
+from the full ``simulate``/``simsit-run`` provenance lifecycle. It refuses to
+replace an existing ``sky_flat.fits`` unless ``overwrite=True`` and never
+creates or replaces a parent-run provenance manifest. It applies the same
+strict no-symlink output policy while allowing unrelated existing files in the
+parent run directory.
 
 Units and reproducibility
 =========================
