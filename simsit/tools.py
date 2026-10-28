@@ -14,6 +14,7 @@ from astropy.time import Time
 
 from .tracker import transform_wcs
 from . import backend
+from .exposure import sample_exposure
 
 __all__ = [
     "draw_stars",
@@ -29,7 +30,7 @@ __all__ = [
 ]
 
 
-def draw_stars(stars, *, t0, exptime, wcs0, tracker, psf, image, nsplit=2):
+def draw_stars(stars, *, t0, exptime, wcs0, tracker, psf, image, nsplit=2, integration=None):
     """
     Draw stars into an image while accounting for tracker motion during exposure.
 
@@ -54,7 +55,10 @@ def draw_stars(stars, *, t0, exptime, wcs0, tracker, psf, image, nsplit=2):
     image : galsim.Image
         Output image to draw into.
     nsplit : int, optional
-        Number of time segments used to approximate motion during the exposure.
+        Number of segments only when ``integration=False`` selects compatibility mode.
+    integration : dict or False, optional
+        Adaptive error/budget settings. Default uses bounded adaptive sampling;
+        ``False`` explicitly selects the fixed-segment compatibility path.
 
     Returns
     -------
@@ -64,6 +68,11 @@ def draw_stars(stars, *, t0, exptime, wcs0, tracker, psf, image, nsplit=2):
         - ``x``, ``y``: image coordinates at exposure midpoint
         - ``x_FITS``, ``y_FITS``: FITS-style pixel coordinates
     """
+    if integration is not False:
+        return _draw_stars_adaptive(
+            stars, t0=t0, exptime=exptime, wcs0=wcs0, tracker=tracker,
+            psf=psf, image=image, settings=dict(integration or {}),
+        )
     if not isinstance(nsplit, (int, np.integer)) or nsplit <= 0:
         raise ValueError("nsplit must be a positive integer.")
     dt = exptime / nsplit * u.s
@@ -125,6 +134,79 @@ def draw_stars(stars, *, t0, exptime, wcs0, tracker, psf, image, nsplit=2):
     return stars
 
 
+def render_expected_segment(start, end, photons, *, wcs, psf, image):
+    """Render an expected photon integral on an image-plane line segment."""
+    if not np.isfinite(photons) or photons < 0:
+        raise ValueError("Expected photon weights must be finite and nonnegative.")
+    if photons == 0:
+        return
+    start = np.asarray(start, dtype=float)
+    end = np.asarray(end, dtype=float)
+    if start.shape != (2,) or end.shape != (2,) or not np.isfinite([start, end]).all():
+        raise ValueError("Segment endpoints must be finite pixel pairs.")
+    delta = end - start
+    length = np.linalg.norm(delta)
+    center = galsim.PositionD(*((start + end) / 2))
+    local = wcs.local(center)
+    if length < 1e-12:
+        line = galsim.DeltaFunction()
+    else:
+        angle = np.arctan2(-delta[0], delta[1]) * galsim.radians
+        line = galsim.Box(1e-12, length).rotate(angle)
+    obj = galsim.Convolve(local.toWorld(line), psf).withFlux(float(photons))
+    stamp = obj.drawImage(wcs=local, center=center, method="auto")
+    bounds = stamp.bounds & image.bounds
+    if bounds.area() > 0:
+        image[bounds] += stamp[bounds]
+
+
+def _draw_stars_adaptive(stars, *, t0, exptime, wcs0, tracker, psf, image, settings):
+    epoch = backend.as_time(t0)
+    exptime = float(u.Quantity(exptime, u.s).to_value(u.s))
+    if not epoch.isscalar or not np.isfinite(exptime) or exptime <= 0:
+        raise ValueError("One epoch and a positive exposure duration are required.")
+    cache = {}
+
+    def at(time):
+        key = (float(time.jd1), float(time.jd2))
+        if key not in cache:
+            cache[key] = transform_wcs(
+                wcs0, tracker.get_boresight(time), tracker.get_rot_sky_pos(time),
+            )
+        return cache[key]
+
+    midpoint = at(epoch + exptime / 2 * u.s)
+    stars["x"], stars["y"] = midpoint.radecToxy(stars["ra"], stars["dec"], units="degrees")
+    evaluations = []
+    errors = []
+    for star in stars:
+        def position(time):
+            x, y = at(time).radecToxy(float(star["ra"]), float(star["dec"]), units="degrees")
+            return np.array([x, y])
+
+        result = sample_exposure(
+            position, lambda time: float(star["nphot"]) / exptime,
+            epoch, exptime, **settings,
+        )
+        evaluations.append(result.evaluated_sample_count)
+        errors.append(result.estimated_flux_error)
+        if np.all(result.positions_px == result.positions_px[0]):
+            render_expected_segment(
+                result.positions_px[0], result.positions_px[-1], result.total_photons,
+                wcs=wcs0, psf=psf, image=image,
+            )
+        else:
+            for start, end, photons in zip(
+                result.positions_px[:-1], result.positions_px[1:], result.segment_photons,
+            ):
+                render_expected_segment(start, end, photons, wcs=wcs0, psf=psf, image=image)
+    stars["integration_samples"] = np.asarray(evaluations, dtype=int)
+    stars["estimated_flux_error"] = np.asarray(errors, dtype=float)
+    stars["x_FITS"] = stars["x"] - image.xmin + 1
+    stars["y_FITS"] = stars["y"] - image.ymin + 1
+    return stars
+
+
 def draw_sat(
     orbit,
     *,
@@ -141,6 +223,7 @@ def draw_sat(
     observation_mode="geometric",
     rate_functions=None,
     ab_magnitude_functions=None,
+    integration=None,
 ):
     """
     Draw one or more tracked objects into an image.
@@ -205,10 +288,21 @@ def draw_sat(
             raise ValueError("nphot is required when rate_functions is not supplied.")
         nphot = np.zeros(len(orbit), dtype=float)
     else:
+        if np.ma.isMaskedArray(nphot) and np.any(np.ma.getmaskarray(nphot)):
+            raise ValueError("Fixed photon counts must not be masked.")
         nphot = np.array(nphot, dtype=float, copy=True)
 
     if len(orbit) != len(nphot):
         raise ValueError("orbit and nphot must have the same length.")
+    if nphot.shape != (len(orbit),) or not np.isfinite(nphot).all() or np.any(nphot < 0):
+        raise ValueError("Fixed photon counts must be one finite nonnegative scalar per orbit.")
+    if integration is not False:
+        return _draw_sat_adaptive(
+            orbit, t0=t0, exptime=exptime, wcs0=wcs0, tracker=tracker, psf=psf,
+            image=image, observer=observer, nphot=nphot, propagator=propagator,
+            observation_mode=observation_mode, rate_functions=rate_functions,
+            ab_magnitude_functions=ab_magnitude_functions, settings=dict(integration or {}),
+        )
     if not isinstance(nsplit, (int, np.integer)) or nsplit <= 0:
         raise ValueError("nsplit must be a positive integer.")
 
@@ -315,6 +409,85 @@ def draw_sat(
     table["y1_FITS"] = table["y1"] - image.ymin + 1
 
     return table, wcst
+
+
+def _draw_sat_adaptive(
+    orbits, *, t0, exptime, wcs0, tracker, psf, image, observer, nphot,
+    propagator, observation_mode, rate_functions, ab_magnitude_functions, settings,
+):
+    epoch = backend.as_time(t0)
+    duration = float(u.Quantity(exptime, u.s).to_value(u.s))
+    if not epoch.isscalar or not np.isfinite(duration) or duration <= 0:
+        raise ValueError("One epoch and a positive exposure duration are required.")
+    backend.observation_mode(observation_mode)
+    wcs_cache = {}
+
+    def at(time):
+        key = (float(time.jd1), float(time.jd2))
+        if key not in wcs_cache:
+            wcs_cache[key] = transform_wcs(
+                wcs0, tracker.get_boresight(time), tracker.get_rot_sky_pos(time),
+            )
+        return wcs_cache[key]
+
+    rows = []
+    for index, orbit in enumerate(orbits):
+        sky_cache = {}
+
+        def sky(time):
+            key = (float(time.jd1), float(time.jd2))
+            if key not in sky_cache:
+                ra, dec, distance = backend.sky_coordinates(
+                    orbit, time, observer=observer, propagator=propagator, mode=observation_mode,
+                )
+                coordinates = []
+                for value in (ra, dec, distance):
+                    if np.ma.getmaskarray(value).any():
+                        raise ValueError("Scalar sky coordinates must not be masked.")
+                    array = np.asarray(value, dtype=float)
+                    if array.size != 1 or not np.isfinite(array).all():
+                        raise ValueError("One finite sky coordinate per scalar epoch is required.")
+                    coordinates.append(float(array.item()))
+                sky_cache[key] = tuple(coordinates)
+            return sky_cache[key]
+
+        def position(time):
+            ra, dec, _ = sky(time)
+            point = at(time).posToImage(galsim.CelestialCoord(ra*galsim.radians, dec*galsim.radians))
+            return np.array([point.x, point.y])
+
+        rate = (
+            (lambda time: nphot[index] / duration)
+            if rate_functions is None else rate_functions[index]
+        )
+        result = sample_exposure(position, rate, epoch, duration, **settings)
+        for start, end, photons in zip(
+            result.positions_px[:-1], result.positions_px[1:], result.segment_photons,
+        ):
+            render_expected_segment(start, end, photons, wcs=wcs0, psf=psf, image=image)
+        ra0, dec0, _ = sky(epoch)
+        ra1, dec1, _ = sky(epoch + duration*u.s)
+        x0, y0 = result.positions_px[0]
+        x1, y1 = result.positions_px[-1]
+        mean_mag = (
+            np.nan if ab_magnitude_functions is None
+            else float(ab_magnitude_functions[index](result.total_photons / duration))
+        )
+        rows.append((
+            x0, y0, np.rad2deg(ra0), np.rad2deg(dec0), np.rad2deg(ra1), np.rad2deg(dec1),
+            x1, y1, result.total_photons, mean_mag,
+            result.evaluated_sample_count, result.estimated_flux_error,
+        ))
+    names = (
+        "x0", "y0", "ra0", "dec0", "ra1", "dec1", "x1", "y1", "nphot",
+        "mean_ab_mag", "integration_samples", "estimated_flux_error",
+    )
+    table = Table(rows=rows, names=names, dtype=[float]*10 + [int, float])
+    for axis in ("x", "y"):
+        origin = image.xmin if axis == "x" else image.ymin
+        for endpoint in ("0", "1"):
+            table[f"{axis}{endpoint}_FITS"] = table[f"{axis}{endpoint}"] - origin + 1
+    return table, at(epoch + duration*u.s) if orbits else None
 
 
 def random_dark_time(*, t_day, site, rng):
