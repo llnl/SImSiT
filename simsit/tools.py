@@ -14,6 +14,7 @@ from astropy.time import Time
 
 from .tracker import transform_wcs
 from . import backend
+from .exposure import sample_exposure
 
 __all__ = [
     "draw_stars",
@@ -29,7 +30,7 @@ __all__ = [
 ]
 
 
-def draw_stars(stars, *, t0, exptime, wcs0, tracker, psf, image, nsplit=2):
+def draw_stars(stars, *, t0, exptime, wcs0, tracker, psf, image, nsplit=2, integration=None):
     """
     Draw stars into an image while accounting for tracker motion during exposure.
 
@@ -54,7 +55,10 @@ def draw_stars(stars, *, t0, exptime, wcs0, tracker, psf, image, nsplit=2):
     image : galsim.Image
         Output image to draw into.
     nsplit : int, optional
-        Number of time segments used to approximate motion during the exposure.
+        Number of segments only when ``integration=False`` selects compatibility mode.
+    integration : dict or False, optional
+        Adaptive error/budget settings. Default uses bounded adaptive sampling;
+        ``False`` explicitly selects the fixed-segment compatibility path.
 
     Returns
     -------
@@ -64,6 +68,11 @@ def draw_stars(stars, *, t0, exptime, wcs0, tracker, psf, image, nsplit=2):
         - ``x``, ``y``: image coordinates at exposure midpoint
         - ``x_FITS``, ``y_FITS``: FITS-style pixel coordinates
     """
+    if integration is not False:
+        return _draw_stars_adaptive(
+            stars, t0=t0, exptime=exptime, wcs0=wcs0, tracker=tracker,
+            psf=psf, image=image, settings=dict(integration or {}),
+        )
     if not isinstance(nsplit, (int, np.integer)) or nsplit <= 0:
         raise ValueError("nsplit must be a positive integer.")
     dt = exptime / nsplit * u.s
@@ -122,6 +131,76 @@ def draw_stars(stars, *, t0, exptime, wcs0, tracker, psf, image, nsplit=2):
     stars["x_FITS"] = stars["x"] - image.xmin + 1
     stars["y_FITS"] = stars["y"] - image.ymin + 1
 
+    return stars
+
+
+def render_expected_segment(start, end, photons, *, wcs, psf, image):
+    """Render an expected photon integral on an image-plane line segment."""
+    if not np.isfinite(photons) or photons < 0:
+        raise ValueError("Expected photon weights must be finite and nonnegative.")
+    if photons == 0:
+        return
+    start = np.asarray(start, dtype=float)
+    end = np.asarray(end, dtype=float)
+    if start.shape != (2,) or end.shape != (2,) or not np.isfinite([start, end]).all():
+        raise ValueError("Segment endpoints must be finite pixel pairs.")
+    delta = end - start
+    length = np.linalg.norm(delta)
+    center = galsim.PositionD(*((start + end) / 2))
+    local = wcs.local(center)
+    if length < 1e-12:
+        line = galsim.DeltaFunction()
+    else:
+        angle = np.arctan2(-delta[0], delta[1]) * galsim.radians
+        line = galsim.Box(1e-12, length).rotate(angle)
+    obj = galsim.Convolve(local.toWorld(line), psf).withFlux(float(photons))
+    stamp = obj.drawImage(wcs=local, center=center, method="auto")
+    bounds = stamp.bounds & image.bounds
+    if bounds.area() > 0:
+        image[bounds] += stamp[bounds]
+
+
+def _draw_stars_adaptive(stars, *, t0, exptime, wcs0, tracker, psf, image, settings):
+    epoch = backend.as_time(t0)
+    exptime = float(u.Quantity(exptime, u.s).to_value(u.s))
+    if not epoch.isscalar or not np.isfinite(exptime) or exptime <= 0:
+        raise ValueError("One epoch and a positive exposure duration are required.")
+    cache = {}
+
+    def at(time):
+        key = (float(time.jd1), float(time.jd2))
+        if key not in cache:
+            cache[key] = transform_wcs(
+                wcs0, tracker.get_boresight(time), tracker.get_rot_sky_pos(time),
+            )
+        return cache[key]
+
+    midpoint = at(epoch + exptime / 2 * u.s)
+    stars["x"], stars["y"] = midpoint.radecToxy(stars["ra"], stars["dec"], units="degrees")
+    evaluations = []
+    for star in stars:
+        def position(time):
+            x, y = at(time).radecToxy(float(star["ra"]), float(star["dec"]), units="degrees")
+            return np.array([x, y])
+
+        result = sample_exposure(
+            position, lambda time: float(star["nphot"]) / exptime,
+            epoch, exptime, **settings,
+        )
+        evaluations.append(result.evaluated_sample_count)
+        if np.all(result.positions_px == result.positions_px[0]):
+            render_expected_segment(
+                result.positions_px[0], result.positions_px[-1], result.total_photons,
+                wcs=wcs0, psf=psf, image=image,
+            )
+        else:
+            for start, end, photons in zip(
+                result.positions_px[:-1], result.positions_px[1:], result.segment_photons,
+            ):
+                render_expected_segment(start, end, photons, wcs=wcs0, psf=psf, image=image)
+    stars["integration_samples"] = np.asarray(evaluations, dtype=int)
+    stars["x_FITS"] = stars["x"] - image.xmin + 1
+    stars["y_FITS"] = stars["y"] - image.ymin + 1
     return stars
 
 

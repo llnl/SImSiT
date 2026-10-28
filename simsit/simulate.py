@@ -139,6 +139,7 @@ def make_image(config, rng, parameters):
         tracker=tracker,
         psf=psf,
         image=image,
+        integration=config.get("integration"),
     )
     sats, wcst = simsit.tools.draw_sat(
         orbits,
