@@ -8,6 +8,7 @@ API
    simsit.backend
    simsit.brightness
    simsit.cadence
+   simsit.exposure
    simsit.catalog
    simsit.instrument
    simsit.photometry

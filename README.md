@@ -114,9 +114,26 @@ photometry:
 
 Physical rates use generated-orbit GCRF states at each arrival epoch and fold
 the public SSATK gray Lambertian/faceted model through the configured response.
-Fixed exposure segments use Simpson integration of cached scalar rates. Truth
-stores integrated incident-photon `nphot` and exposure-mean `mean_ab_mag`;
-detector QE and gain are applied only during rendering.
+Stars and satellites use bounded adaptive temporal sampling with Simpson
+weights, cached callback evaluations, image-plane positional moments, and
+explicit photon/flux error budgets. Truth stores integrated incident-photon
+`nphot`, exposure-mean `mean_ab_mag`, `integration_samples`, and
+`estimated_flux_error`; detector QE and gain are applied only during rendering.
+
+Temporal integration is configured at the simulation root:
+
+```yaml
+integration:
+  pixel_tolerance: 0.01
+  flux_relative_tolerance: 1.0e-4
+  max_step_s: 0.1
+  max_depth: 12
+  max_samples: 4097
+```
+
+Set `integration: false` only to select the legacy fixed-segment renderer.
+Adaptive sampling is bounded and can fail loudly for unresolved narrow
+features or when its sample/depth budget is exhausted.
 
 SSATK radiometry assumes gray Lambertian reflection and blackbody source
 spectra. It is not a calibrated spacecraft spectrum, specular-glint model, or
