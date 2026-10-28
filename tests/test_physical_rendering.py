@@ -13,7 +13,11 @@ from simsit.tools import draw_sat, generate_orbit
 from simsit.simulate import make_image
 
 
-def test_variable_rate_renderer_matches_analytic_photon_integral(monkeypatch):
+@pytest.mark.parametrize("sky_shape", [(), (1,)])
+@pytest.mark.filterwarnings(
+    "error:Conversion of an array with ndim > 0 to a scalar is deprecated:DeprecationWarning"
+)
+def test_variable_rate_renderer_matches_analytic_photon_integral(monkeypatch, sky_shape):
     epoch = Time("2025-01-01")
     center = galsim.CelestialCoord(0 * galsim.degrees, 0 * galsim.degrees)
     wcs = galsim.TanWCS(
@@ -24,7 +28,10 @@ def test_variable_rate_renderer_matches_analytic_photon_integral(monkeypatch):
     def coordinates(orbit, times, **kwargs):
         offset = (times - epoch).sec
         ra, dec = wcs.xyToradec(-2 + offset, np.zeros_like(offset), units="radians")
-        return ra, dec, np.full(np.shape(offset), 7e5)
+        return tuple(
+            np.asarray(value).reshape(sky_shape)
+            for value in (ra, dec, np.full(np.shape(offset), 7e5))
+        )
 
     monkeypatch.setattr("simsit.tools.backend.sky_coordinates", coordinates)
     image = galsim.Image(galsim.BoundsI(-20, 20, -20, 20))
@@ -84,7 +91,11 @@ def test_physical_model_drives_image_truth_not_synthetic_magnitudes(monkeypatch)
          "photometry": {"model": "lambertian", "params": {
              "radius_m": 0.5, "albedo": 0.3, "include_earthshine": False,
              "include_moonshine": False, "k_extinction": 0,
-         }, "spectral_relative_tolerance": 0.005}}
+         }, "spectral_relative_tolerance": 0.005},
+         "integration": {
+             "pixel_tolerance": 0.001, "flux_relative_tolerance": 1e-4,
+             "max_step_s": exposure / 2, "max_samples": 257,
+         }}
     parameters = {"observer": observer, "t0": epoch, "instrument": instrument, "exptime": exposure,
          "orbit": [orbit], "tracker": tracker, "zp": instrument.photon_zeropoint,
          "sat_mag": [None], "sky_sb": 18, "psf_fwhm": 2, "i_obs": 0,
@@ -98,3 +109,17 @@ def test_physical_model_drives_image_truth_not_synthetic_magnitudes(monkeypatch)
     np.testing.assert_allclose(truth["mag"], expected, atol=1e-10, rtol=0)
     np.testing.assert_allclose(truth["mean_ab_mag"], expected, atol=1e-10, rtol=0)
     assert "geometric radiometry" in output[0].header["PHOTO"]
+    assert output[0].header["INTMODE"] == "adaptive"
+    assert output[0].header["PIXTOL"] == pytest.approx(0.001)
+    assert output[0].header["FLXTOL"] == pytest.approx(1e-4)
+    assert truth["integration_samples"][0] >= 5
+    assert truth["estimated_flux_error"][0] >= 0
+
+    fixed_output = make_image(
+        {**config, "integration": False},
+        np.random.default_rng(42),
+        parameters,
+    )
+    assert fixed_output[0].header["INTMODE"] == "fixed"
+    assert "PIXTOL" not in fixed_output[0].header
+    assert "FLXTOL" not in fixed_output[0].header

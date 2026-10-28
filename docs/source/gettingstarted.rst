@@ -194,14 +194,37 @@ parameters:
      max_spectral_samples: 257
 
 Physical models evaluate public SSATK radiometry from generated-orbit GCRF
-states at each arrival epoch. Fixed exposure segments use Simpson integration
-of cached scalar photon-rate callbacks. Truth tables record integrated
-incident ``nphot`` and exposure-mean ``mean_ab_mag``. The bounded spectral
+states at each arrival epoch. Stars and satellites use bounded adaptive
+temporal sampling with Simpson weights and cached scalar callbacks. Truth
+tables record integrated incident ``nphot``, exposure-mean ``mean_ab_mag``,
+``integration_samples`` and ``estimated_flux_error``. The bounded spectral
 estimate uses SSATK gray Lambertian/faceted reflection and blackbody source
 assumptions; it does not infer spacecraft geometry or material properties.
 In apparent observation mode, SSATK changes direction using light-time and
 aberration, while radiometry remains the geometric model evaluated at the
 explicit arrival state.
+
+Temporal integration
+====================
+
+Adaptive temporal sampling is enabled by default. Configure its positional
+and flux budgets at the simulation root:
+
+.. code-block:: yaml
+
+   integration:
+     pixel_tolerance: 0.01
+     flux_relative_tolerance: 1.0e-4
+     max_step_s: 0.1
+     max_depth: 12
+     max_samples: 4097
+
+The sampler subdivides fixed seed intervals, uses Simpson estimates for
+photon weights, and stops only when positional moments and local/global flux
+budgets are met. ``integration: false`` selects the legacy fixed-segment
+renderer. Narrow unresolved features may require a smaller ``max_step_s`` or
+larger bounded budgets; exceeding the bounds raises rather than silently
+under-sampling.
 
 Run lifecycle and provenance
 ============================
