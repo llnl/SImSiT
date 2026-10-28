@@ -440,7 +440,15 @@ def _draw_sat_adaptive(
                 ra, dec, distance = backend.sky_coordinates(
                     orbit, time, observer=observer, propagator=propagator, mode=observation_mode,
                 )
-                sky_cache[key] = (float(ra), float(dec), float(distance))
+                coordinates = []
+                for value in (ra, dec, distance):
+                    if np.ma.getmaskarray(value).any():
+                        raise ValueError("Scalar sky coordinates must not be masked.")
+                    array = np.asarray(value, dtype=float)
+                    if array.size != 1 or not np.isfinite(array).all():
+                        raise ValueError("One finite sky coordinate per scalar epoch is required.")
+                    coordinates.append(float(array.item()))
+                sky_cache[key] = tuple(coordinates)
             return sky_cache[key]
 
         def position(time):
