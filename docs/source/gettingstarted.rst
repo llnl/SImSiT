@@ -41,6 +41,8 @@ Common settings include:
   zeropoint offsets
 - ``catalog``: star catalog configuration
 - ``tracker``: boresight and tracking model configuration
+- ``photometry.model``: required satellite source model, ``constant``,
+  ``lambertian``, or ``faceted``
 
 Example configurations
 ======================
@@ -155,6 +157,46 @@ the selected response. Band-mean physical flux-density columns can instead
 use ``catalog.magnitude_system: flux_density``; raw Gaia G is not used for
 another band. Response identity and calibration references are recorded
 in ``FILTER``, ``RESPHASH``, ``BANDREF`` and ``ZPREF`` FITS keywords.
+
+Satellite photometry
+====================
+
+Select the satellite source model explicitly in every configuration. Constant
+photometry retains the synthetic AB-magnitude behavior:
+
+.. code-block:: yaml
+
+   sat:
+     mag_range: [12.0, 15.0]
+   photometry:
+     model: constant
+
+The physical Lambertian model requires explicit geometry and material
+parameters:
+
+.. code-block:: yaml
+
+   sat:
+     mag_range: null
+   photometry:
+     model: lambertian
+     params:
+       radius_m: 1.0
+       albedo: 0.2
+       include_earthshine: false
+       include_moonshine: false
+     spectral_relative_tolerance: 1.0e-4
+     max_spectral_samples: 257
+
+Physical models evaluate public SSATK radiometry from generated-orbit GCRF
+states at each arrival epoch. Fixed exposure segments use Simpson integration
+of cached scalar photon-rate callbacks. Truth tables record integrated
+incident ``nphot`` and exposure-mean ``mean_ab_mag``. The bounded spectral
+estimate uses SSATK gray Lambertian/faceted reflection and blackbody source
+assumptions; it does not infer spacecraft geometry or material properties.
+In apparent observation mode, SSATK changes direction using light-time and
+aberration, while radiometry remains the geometric model evaluated at the
+explicit arrival state.
 
 Units and reproducibility
 =========================

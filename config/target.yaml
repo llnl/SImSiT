@@ -72,7 +72,14 @@ sites:
   - Cerro Pachon
 
 sat:
-  mag_range: [12.0, 15.0]
+  mag_range: null
+photometry:
+  model: lambertian
+  params:
+    radius_m: 1.0
+    albedo: 0.2
+    include_earthshine: false
+    include_moonshine: false
 
 catalog:
   develop: true
