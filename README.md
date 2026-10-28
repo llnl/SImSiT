@@ -142,6 +142,39 @@ SSATK light-time and aberration handling; radiometry remains the geometric
 model evaluated at the explicit arrival state. Facet geometry, attitude, and
 material coefficients are caller supplied.
 
+## Reproducible Run Lifecycle
+
+Run a validated configuration with:
+
+```bash
+simsit-run config/sidereal.yaml
+simsit-run config/sidereal.yaml --overwrite
+```
+
+Configuration validation, site resolution, and non-development Gaia-directory
+checks complete before the output root is created. Output directories must be
+relative and contained, and existing nonempty roots are refused unless
+`--overwrite` is explicit. Before any output write, all existing entries below
+the root are scanned without following directory links; any symlink, including
+an unrelated link, causes refusal. This assumes a stable, owned output
+directory and does not claim adversarial concurrent-filesystem protection.
+Overwrite never deletes unrelated or stale files.
+
+Each run writes an atomic `provenance.json` manifest. It records source-module
+hashes, dependency versions, explicit input hashes, lifecycle `status`
+(`running`, `complete`, or `failed`), and only products written by the current
+run. Gaia provenance records the individual FITS trixels actually read, not
+the entire catalog directory. Files retained from earlier runs are documented
+as stale and are intentionally omitted from the current product inventory.
+Inputs are hashed once when consumed and products once after successful write;
+intermediate and final manifest updates reuse those cached hashes.
+
+The legacy `make_sky_flat(configfile, *, overwrite=False)` helper is separate
+from this full `simulate`/`simsit-run` provenance lifecycle. It requires
+explicit overwrite for an existing `sky_flat.fits`, applies the strict
+no-symlink output policy, permits unrelated parent files, and does not replace
+the parent run manifest.
+
 ## Validation
 
 Run the offline reference and end-to-end tests with

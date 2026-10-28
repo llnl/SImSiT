@@ -4,6 +4,7 @@ Star catalog interfaces for observation simulation.
 
 import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 import astropy.units as u
 import lsst.sphgeom as sphgeom
@@ -347,6 +348,7 @@ class GaiaStarCatalog(StarCatalog):
     ):
         super().__init__(level=level)
         self.gaia_dir = gaia_dir
+        self.input_paths = set()
         self.passband = passband
         self.magnitude_column = magnitude_column
         self.magnitude_system = magnitude_system
@@ -411,8 +413,10 @@ class GaiaStarCatalog(StarCatalog):
         astropy.table.Table
             Star table with apparent coordinates and explicitly labeled ``mag``.
         """
-        filename = os.path.join(self.gaia_dir, f"{idx}.fits")
+        filename = Path(self.gaia_dir, f"{idx}.fits").resolve(strict=False)
         gaia_data = Table.read(filename)
+        if filename.is_file():
+            self.input_paths.add(filename)
 
         g_mag, photometric_metadata = self._magnitudes(gaia_data)
 
