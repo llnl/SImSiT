@@ -6,6 +6,7 @@ API
    :template: automodapi_templ.rst
 
    simsit.backend
+   simsit.brightness
    simsit.cadence
    simsit.catalog
    simsit.instrument

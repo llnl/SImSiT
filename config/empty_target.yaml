@@ -73,6 +73,8 @@ sites:
 
 sat:
   mag_range: null
+photometry:
+  model: constant
 
 catalog:
   develop: true

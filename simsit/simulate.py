@@ -16,6 +16,7 @@ from astropy.time import Time
 from tqdm import tqdm
 from .tracker import transform_wcs as _transform_wcs
 from . import backend
+from .brightness import model_from_config as _model_from_config
 
 
 def make_image(config, rng, parameters):
@@ -56,10 +57,29 @@ def make_image(config, rng, parameters):
     psf_fwhm = parameters["psf_fwhm"]
     i_obs = parameters["i_obs"]
     propagator = parameters["propagator"]
-    observation_mode = backend.observation_mode(parameters.get("observation_mode", "geometric"))
+    observation_mode = backend.observation_mode(
+        parameters.get("observation_mode", "geometric")
+    )
+    photometry = config.get("photometry")
+    if not isinstance(photometry, dict) or photometry.get("model") not in (
+        "constant", "lambertian", "faceted",
+    ):
+        raise ValueError("photometry.model must be 'constant', 'lambertian', or 'faceted'.")
+    if photometry["model"] == "constant":
+        photo_description = "constant synthetic AB magnitude"
+    else:
+        photo_description = (
+            f"SSATK gray {photometry['model']} geometric radiometry at arrival epoch; "
+            "apparent mode only changes direction/light-time"
+        )
 
     if instrument.passband is None:
         raise ValueError("Image generation requires an explicit named passband response.")
+    brightness = _model_from_config(instrument, photometry)
+    if photometry["model"] != "constant" and (
+        config["sat"].get("mag_range") is not None or any(mag is not None for mag in sat_mags)
+    ):
+        raise ValueError("Physical photometry cannot also use synthetic magnitudes.")
     zp_offset = zp - instrument.photon_zeropoint
     sky_phot = instrument.photon_rate(sky_sb, zeropoint_offset=zp_offset).to_value(1 / u.s)
     psf = galsim.Kolmogorov(
@@ -118,14 +138,47 @@ def make_image(config, rng, parameters):
     stars = stars[stars["SNR"] > config["catalog"]["min_snr"]]
     print(f"{len(stars) = }")
 
-    sat_nphots = []
-    for sat_mag in sat_mags:
-        if sat_mag is not None:
-            sat_nphots.append(
-                float(instrument.photon_rate(sat_mag, zeropoint_offset=zp_offset).to_value(1 / u.s)) * exptime
-            )
-        else:
-            sat_nphots.append(0.0)
+    sat_nphots = None
+    rate_functions = None
+    ab_magnitude_functions = None
+    if photometry["model"] == "constant":
+        sat_nphots = []
+        for sat_mag in sat_mags:
+            if sat_mag is not None:
+                sat_nphots.append(
+                    float(
+                        instrument.photon_rate(
+                            sat_mag, zeropoint_offset=zp_offset,
+                        ).to_value(1 / u.s)
+                    ) * exptime
+                )
+            else:
+                sat_nphots.append(0.0)
+    else:
+        calibration_ratio = (
+            instrument.photon_scale(zp_offset) / instrument.photon_scale(0.0)
+        )
+        zero_rate = instrument.photon_rate(
+            0.0, zeropoint_offset=zp_offset,
+        ).to_value(1 / u.s)
+        rate_functions = []
+        ab_magnitude_functions = []
+        for orbit in orbits:
+            def rate(time, orbit=orbit):
+                position, _ = backend.states(
+                    orbit, time, propagator=propagator,
+                )
+                return brightness.photon_rate(
+                    position, time, observer,
+                ) * calibration_ratio
+
+            def mean_ab_mag(rate_value, zero_rate=zero_rate):
+                if rate_value <= 0:
+                    return np.inf
+                return -2.5 * np.log10(rate_value / zero_rate)
+
+            rate_functions.append(rate)
+            ab_magnitude_functions.append(mean_ab_mag)
 
     print(f"{sat_mags = }")
     print(f"{sat_nphots = }")
@@ -153,11 +206,17 @@ def make_image(config, rng, parameters):
         nphot=sat_nphots,
         propagator=propagator,
         observation_mode=observation_mode,
+        rate_functions=rate_functions,
+        ab_magnitude_functions=ab_magnitude_functions,
     )
 
     if wcst is None:
         wcst = _transform_wcs(wcs0, p1, tracker.get_rot_sky_pos(t0 + exptime * u.s))
-    sats["mag"] = [np.nan if mag is None else mag for mag in sat_mags]
+    if photometry["model"] == "constant":
+        sats["mean_ab_mag"] = [
+            np.nan if mag is None else mag for mag in sat_mags
+        ]
+    sats["mag"] = np.asarray(sats["mean_ab_mag"])
     instrument.apply_vignetting(image)
     instrument.apply_noise(image, sky_phot, rng)
 
@@ -194,7 +253,11 @@ def make_image(config, rng, parameters):
                 "dec0": float(sat["dec0"] + rng.uniform(0, sigma_sky_deg)),
                 "ra1": float((sat["ra1"] + rng.uniform(0, sigma_sky_deg)) % 360.0),
                 "dec1": float(sat["dec1"] + rng.uniform(0, sigma_sky_deg)),
-                "mag": None if np.isnan(sat["mag"]) else float(sat["mag"]),
+                "mag": None if not np.isfinite(sat["mag"]) else float(sat["mag"]),
+                "mean_ab_mag": (
+                    None if not np.isfinite(sat["mean_ab_mag"])
+                    else float(sat["mean_ab_mag"])
+                ),
             }
         )
 
@@ -256,7 +319,11 @@ def make_image(config, rng, parameters):
         header["FILTER"] = instrument.passband.name
         header["RESPHASH"] = instrument.passband.response_hash
         header["BANDREF"] = instrument.passband.reference
-        header["ZPREF"] = instrument.zeropoint_reference or "Derived from response and collecting area"
+        header["ZPREF"] = (
+            instrument.zeropoint_reference
+            or "Derived from response and collecting area"
+        )
+        header["PHOTO"] = photo_description
     hdu.header["BUNIT"] = "ADU"
     hdu_true_wcs_start.header["MAGZP"] = adu_zp
     hdu_true_wcs_end.header["MAGZP"] = adu_zp
@@ -310,6 +377,10 @@ def simulate(config):
     instrument = simsit.Instrument.from_config(config["instrument"])
     if instrument.passband is None:
         raise ValueError("Simulation requires an explicit named passband response.")
+    photometry = config.get("photometry")
+    _model_from_config(instrument, photometry)
+    if photometry["model"] != "constant" and config["sat"].get("mag_range") is not None:
+        raise ValueError("Physical photometry cannot also use synthetic mag_range.")
 
     for d in [image_dir, reference_dir]:
         path = os.path.join(config["outdir"], d)
@@ -324,7 +395,9 @@ def simulate(config):
     reference_example_hdul = fits.HDUList([fits.PrimaryHDU()])
     reference_hdul = fits.HDUList([fits.PrimaryHDU()])
     propagator = backend.keplerian_propagator()
-    observation_mode = backend.observation_mode(config.get("observation", {}).get("mode", "geometric"))
+    observation_mode = backend.observation_mode(
+        config.get("observation", {}).get("mode", "geometric")
+    )
 
     for i_obs in tqdm(range(config["n_obs"])):
         with simsit.tools.nostdout():
@@ -382,7 +455,14 @@ def simulate(config):
                 tmid,
             )
 
-            if config["sat"]["mag_range"] is not None:
+            photometry = config.get("photometry")
+            if not isinstance(photometry, dict) or photometry.get("model") not in (
+                "constant", "lambertian", "faceted",
+            ):
+                raise ValueError(
+                    "photometry.model must be 'constant', 'lambertian', or 'faceted'."
+                )
+            if photometry["model"] == "constant" and config["sat"]["mag_range"] is not None:
                 sat_mag = rng.uniform(*config["sat"]["mag_range"])
             else:
                 sat_mag = None
@@ -473,10 +553,12 @@ def simulate(config):
                 observation_mode=observation_mode,
             )
 
-            hdu, hdu_true_wcs_start, hdu_true_wcs_end, image_metadata, reference_hdulist = make_image(
-                config,
-                rng,
-                parameters,
+            hdu, hdu_true_wcs_start, hdu_true_wcs_end, image_metadata, reference_hdulist = (
+                make_image(
+                    config,
+                    rng,
+                    parameters,
+                )
             )
 
             reference_hdul.append(reference_hdulist[0])

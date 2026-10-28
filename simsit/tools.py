@@ -214,10 +214,12 @@ def draw_sat(
     psf,
     image,
     observer,
-    nphot,
+    nphot=None,
     nsplit=10,
     propagator=None,
     observation_mode="geometric",
+    rate_functions=None,
+    ab_magnitude_functions=None,
 ):
     """
     Draw one or more tracked objects into an image.
@@ -240,12 +242,20 @@ def draw_sat(
         Output image to draw into.
     observer : ssatk.EarthObserver
         Observer location.
-    nphot : sequence of float
-        Photon counts for each orbit.
+    nphot : sequence of float, optional
+        Fixed photon counts for each orbit. Required unless ``rate_functions``
+        supplies scalar photons/sec callbacks.
     nsplit : int, optional
         Number of time segments used to approximate motion during the exposure.
     propagator : object, optional
         Propagator used for orbit evaluation.
+    rate_functions : sequence of callable, optional
+        One callback per orbit. Each callback receives one scalar Astropy
+        ``Time`` and returns incident photons/sec. Rates are cached per
+        exposure and integrated with Simpson's rule on each fixed segment.
+    ab_magnitude_functions : sequence of callable, optional
+        Optional one-per-orbit callbacks converting an exposure-mean photon
+        rate to an AB magnitude.
 
     Returns
     -------
@@ -255,7 +265,26 @@ def draw_sat(
         Final WCS used during drawing. Returns None if no orbits were provided.
     """
     orbit = list(orbit)
-    nphot = np.asarray(nphot, dtype=float)
+    if rate_functions is not None and nphot is not None:
+        raise ValueError("Choose fixed photon counts or time-varying rate functions, not both.")
+    if rate_functions is not None:
+        rate_functions = list(rate_functions)
+        if len(rate_functions) != len(orbit) or any(
+            not callable(fn) for fn in rate_functions
+        ):
+            raise ValueError("rate_functions must contain one callable per orbit.")
+    if ab_magnitude_functions is not None:
+        ab_magnitude_functions = list(ab_magnitude_functions)
+        if len(ab_magnitude_functions) != len(orbit) or any(
+            not callable(fn) for fn in ab_magnitude_functions
+        ):
+            raise ValueError("ab_magnitude_functions must contain one callable per orbit.")
+    if nphot is None:
+        if rate_functions is None:
+            raise ValueError("nphot is required when rate_functions is not supplied.")
+        nphot = np.zeros(len(orbit), dtype=float)
+    else:
+        nphot = np.array(nphot, dtype=float, copy=True)
 
     if len(orbit) != len(nphot):
         raise ValueError("orbit and nphot must have the same length.")
@@ -275,6 +304,7 @@ def draw_sat(
     dt = exptime / nsplit
     ts = t0 + np.linspace(0, exptime, nsplit + 1) * u.s
     wcst = None
+    mean_ab_mag = np.full(len(orbit), np.nan)
 
     for idx, orb in enumerate(orbit):
         ra, dec, _ = backend.sky_coordinates(
@@ -291,6 +321,35 @@ def draw_sat(
         xs0.append(xy0.x)
         ys0.append(xy0.y)
 
+        segment_nphot = np.full(nsplit, nphot[idx] / nsplit)
+        if rate_functions is not None:
+            cache = {}
+
+            def rate(time):
+                key = float(time.gps)
+                if key not in cache:
+                    result = rate_functions[idx](time)
+                    if isinstance(result, u.Quantity):
+                        result = result.to_value(1 / u.s)
+                    result = float(result)
+                    if not np.isfinite(result) or result < 0:
+                        raise ValueError(
+                            "Satellite rate callbacks must return finite "
+                            "nonnegative photons/sec."
+                        )
+                    cache[key] = result
+                return cache[key]
+
+            for isplit in range(nsplit):
+                left, right = ts[isplit], ts[isplit + 1]
+                midpoint = left + 0.5 * (right - left)
+                segment_nphot[isplit] = (right - left).to_value(u.s) / 6 * (
+                    rate(left) + 4 * rate(midpoint) + rate(right)
+                )
+            nphot[idx] = np.sum(segment_nphot)
+            if ab_magnitude_functions is not None:
+                mean_ab_mag[idx] = ab_magnitude_functions[idx](nphot[idx] / exptime)
+
         for i in range(1, nsplit + 1):
             t = t0 + i * dt * u.s
             boresight = tracker.get_boresight(t)
@@ -305,7 +364,7 @@ def draw_sat(
             )
             xy = (xy0 + xy1) / 2
             local_wcs = wcs0.local(xy)
-            stamp = (obj * nphot[idx] / nsplit).drawImage(
+            stamp = (obj * segment_nphot[i - 1]).drawImage(
                 wcs=local_wcs,
                 center=xy,
                 method="auto",
@@ -327,6 +386,7 @@ def draw_sat(
     table["x1"] = np.asarray(xs1)
     table["y1"] = np.asarray(ys1)
     table["nphot"] = nphot
+    table["mean_ab_mag"] = mean_ab_mag
 
     table["x0_FITS"] = table["x0"] - image.xmin + 1
     table["x1_FITS"] = table["x1"] - image.xmin + 1
